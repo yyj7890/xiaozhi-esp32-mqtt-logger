@@ -19,11 +19,11 @@ conda install ffmpeg -y
 
 ## 2. 安装依赖
 
-服务端代码单独存放在本机目录，不放入本固件仓库。以当前工作区为例：
+服务端代码单独存放在本机目录，不放入本固件仓库。将下方的 `<服务端根目录>` 替换为你的本机路径：
 
 ```powershell
 conda activate xiaozhi-esp32-server
-cd D:\AI\XiaoZhi\xiaozhi-esp32-server\main\xiaozhi-server
+cd <服务端根目录>\main\xiaozhi-server
 pip install -r requirements.txt
 ```
 
@@ -43,7 +43,7 @@ pip install -r requirements.txt
 
 ```powershell
 conda activate xiaozhi-esp32-server
-cd D:\AI\XiaoZhi\xiaozhi-esp32-server\main\xiaozhi-server
+cd <服务端根目录>\main\xiaozhi-server
 python app.py
 ```
 
