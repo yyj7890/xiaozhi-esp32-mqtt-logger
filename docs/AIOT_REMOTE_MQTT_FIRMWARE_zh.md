@@ -1,6 +1,6 @@
 # AIoT 日志远程 MQTT 固件版本记录
 
-更新时间：2026-07-16
+更新时间：2026-07-17
 
 ## 1. 文档目的
 
@@ -32,7 +32,7 @@
 候选标签：firmware-v2.2.6-aiot-remote-mqtt.4
 ```
 
-当前状态：本地开发分支已创建；尚未执行 commit、push、创建 GitHub 远程分支或标签。原 `main` 分支的已有局域网版本未被覆盖。
+当前状态：功能实现基线提交 `d891417` 已推送到 `feature/aiot-remote-mqtt-firmware` GitHub 远程分支；后续允许仅用于同步记录的文档提交继续推进该分支。本地与远程保持同步；尚未合并到 `main`，未创建 Git 标签、GitHub Release 或 PR。原 `main` 分支的已有局域网版本未被覆盖。
 
 本分支生成的是“远程能力版”固件：同一个固件镜像在配网页中保留局域网和远程两个独立配置档案，通过运行时模式开关选择当前日志通道。原局域网固件仍可从原分支独立构建。
 
@@ -146,7 +146,7 @@ LAN 配置：lan_host、lan_port、lan_username、lan_password、lan_discovery_t
 - ESP-IDF 为 v5.5.4；
 - 已启用 MbedTLS TLS 客户端和完整 CA bundle；
 - ESP-IDF 支持服务端证书验证、主机名验证和 SNI；
-- 已创建本地分支 `feature/aiot-remote-mqtt-firmware`，未提交、未推送；
+- 已创建并推送功能分支 `feature/aiot-remote-mqtt-firmware`，功能实现基线提交为 `d891417`；
 - LAN 与远程 NVS 配置已拆为两个档案，并兼容读取、镜像旧 NVS 键；
 - 配网页已拆为局域网和远程两个配置区，密码与 Token 只写不回显；
 - 远程 Host 会拒绝 IP、URL、端口和非法 DNS 标签，端口固定为 `8883`；
@@ -161,12 +161,12 @@ LAN 配置：lan_host、lan_port、lan_username、lan_password、lan_discovery_t
 
 当前待解决问题：
 
-1. 已通过配网页写入私有远程配置，`.1` 真机曾成功经 HiveMQ 上传到 IoT 后端，`.2` 已确认普通 Wi-Fi 下稳定建立远程日志连接；
-2. 尚未使用手机热点或其他异地网络测试；
-3. 尚未验证断网退避、Wi-Fi 恢复和 Broker 不可达后的真实故障/恢复事件；
-4. 群晖尚未恢复，未验证完整后端链路；
+1. 已通过配网页写入私有远程配置，`.1` 真机曾成功经 HiveMQ 上传到 IoT 后端，`.2` 至 `.4` 已分别完成普通 Wi-Fi 下的远程连接验证；
+2. 不同 Wi-Fi/异地网络已经证明可以上传日志，并暴露过连接噪声和页面刷新延迟；`.4` 修复后仍需重新执行手机热点或异地网络冷启动和运行中切换测试；
+3. 尚未完整验证短暂断网退避、运行中 Wi-Fi 切换，以及持续 Broker 不可达达到阈值后的真实故障/恢复事件；
+4. 群晖远程后端镜像已部署并观察到“小智 → HiveMQ Cloud → 群晖后端 → MySQL → Vue”日志链路；页面自动刷新时效性属于 IoT 前后端的独立问题，不作为固件 TLS 链路失败判断依据；
 5. 当前 NVS 未加密，凭据存在物理读取风险；
-6. 本地覆盖组件目前仍是未跟踪文件，未来提交时必须确认完整加入，不能只提交 `main/`；
+6. 本地覆盖组件已完整纳入提交，包括 `components/aiot_log_config/` 和 `components/esp-wifi-connect/`；生成的 `.component_hash` 继续忽略；
 7. 标准 `export.ps1` 默认仍引用已不存在的 `idf5.5_py3.11_env`，而当前 `D:\Espressif\tools` 的约束文件和工具包目录布局也不能被同一个 `IDF_TOOLS_PATH` 直接识别，后续需要单独修复开发环境配置；本次未安装、删除或重置 ESP-IDF。
 
 ## 8. 计划修改范围
@@ -190,7 +190,7 @@ LAN 配置：lan_host、lan_port、lan_username、lan_password、lan_discovery_t
 
 ## 9. 实施记录
 
-1. 已创建本地 `feature/aiot-remote-mqtt-firmware` 分支并保留原有未提交修改；
+1. 已创建本地 `feature/aiot-remote-mqtt-firmware` 分支，完成实现后创建提交 `d891417` 并推送到同名 GitHub 远程分支；
 2. 已修复 `.gitignore` 的组件跟踪规则；
 3. 已将 LAN 与远程配置拆分保存；
 4. 已完成严格域名校验、TLS、CA、主机名验证和 SNI；
@@ -199,9 +199,10 @@ LAN 配置：lan_host、lan_port、lan_username、lan_password、lan_discovery_t
 7. 已完成 ESP-IDF v5.5.4 配置与完整编译；
 8. 已为远程日志通道增加可信时间门控和握手期证书有效期检查，未开启全局日期检查；
 9. 已完成配网页 JavaScript 语法检查、敏感信息扫描和 `git diff --check`；
-10. 用户已明确允许在 `COM7` 烧录；`.1` 与 `.2` 均已完成对应真机验证，`.2` 的烧录和冷启动结果记录在第 14 节。
+10. 用户已明确允许在 `COM7` 烧录；`.1` 至 `.4` 已完成对应阶段的真机验证，`.2`、`.3` 和 `.4` 的结果分别记录在第 14、15、16 节；
+11. 已完成提交前隐私清理和敏感信息复查，并将最终提交与推送状态记录在第 17 节。
 
-本次 `COM7` 烧录已获得用户明确授权并完成。未经用户另行明确允许，不执行 Git commit、Git push、创建 GitHub 远程分支、创建标签、再次烧录或部署。
+`COM7` 烧录、本地 Git commit 和功能分支 push 均已分别获得用户明确授权并完成。未经用户另行明确允许，不合并 `main`、不创建标签或 Release、不再次烧录或部署。
 
 ## 10. 真机测试顺序
 
@@ -330,3 +331,34 @@ D:\AI\XiaoZhi\firmware-backups\xiaozhi-remote-mqtt-baseline-2026-07-16-v2.2.6-ai
 烧录后普通硬复位的 70 秒脱敏观察结果：设备完成联网，可信系统时间就绪并只发布一次 `mqtt_connected`；没有发布 `mqtt_connection_failed` 或 `mqtt_reconnected`，没有日志队列丢弃、发布排队失败、远程配置无效、TLS 错误、Panic 或看门狗。观察到两条 Wi-Fi 断开相关启动/切换记录，但设备随后正常联网且未被上报为 MQTT 故障，符合本候选版将网络切换与 Broker 故障分离的目标。
 
 仍需人工验证手机热点/异地 Wi-Fi 冷启动、运行中切换网络、短暂断网恢复、持续 Broker 不可达阈值，以及最终局域网 UDP `19830` / Mosquitto TCP `1883` 回归。
+
+## 17. 隐私清理、Git 提交与 GitHub 推送
+
+2026-07-17 在 `.4` 真机验证完成后，对准备公开提交的源码再次执行隐私和敏感信息审查，并完成以下清理：
+
+- 删除 SmartConfig 接收凭据时向串口输出 Wi-Fi 密码的旧日志，只保留不含密码的 SSID 提示；
+- 删除配网页中具体 `deviceCode` 的前端兜底值，未取得配置时显示为空；
+- 将 `CONFIG_AIOT_MQTT_LOG_DEVICE_CODE` 的 Kconfig 具体默认值改为空，继续允许用户在本机 `sdkconfig` 中私密配置；
+- 清理纳入版本管理的 Wi-Fi 组件原文件中的行尾空格，使 `git diff --check` 通过。
+
+对实际提交内容执行的复查结果：
+
+- 未发现真实 HiveMQ Cloud 域名；
+- 未发现 MQTT 用户名、密码、Token 或密码格式化日志；
+- 未发现具体设备 `deviceCode`、设备 MAC、私网 IPv4 地址或证书私钥；
+- 本机 `sdkconfig`、`dependencies.lock`、`build/`、固件 `.bin`、私有备份目录和 `.component_hash` 均未被 Git 跟踪；
+- 仓库中的 `sdkconfig.defaults*` 和开发板专用 `sdkconfig.*` 属于原项目公开板级构建配置，不是本机私密 `sdkconfig`。
+
+提交与推送结果：
+
+```text
+分支：feature/aiot-remote-mqtt-firmware
+提交：d891417 feat: add independent remote AIoT MQTT firmware mode
+远程：origin/feature/aiot-remote-mqtt-firmware
+```
+
+功能实现提交完成时，本地分支与远程分支均指向 `d891417`，工作区干净；后续仅文档记录提交可以继续推进该功能分支，不改变 `d891417` 作为已验证功能实现基线的含义。`main` 仍停留在原局域网基线提交 `440476d`，尚未创建 PR、合并、标签或 GitHub Release。
+
+需要注意：设备上当前运行并完成真机验证的仍是第 16 节记录的 `.4` 二进制，SHA-256 为 `5929175DF1F9AD6B38F4148045A1BE2CB7316F28BC634521D6A14772FE244B06`。上述三项公开提交前隐私清理发生在该固件烧录之后，因此提交 `d891417` 的源码与设备上的 `.4` 二进制不是完全相同的源代码快照。本次已完成 `wifi_configuration_ap.cc` 定向语法编译、配网页内嵌 JavaScript 语法检查、敏感信息扫描和 `git diff --check`；由于旧构建目录缺少 Ninja 增量日志，构建系统会重新执行约 2200 个步骤，提交前未再次完成新的全量固件构建。
+
+因此，下次生成可发布固件或再次烧录前，必须基于提交 `d891417` 或其后续提交执行一次干净、完整的 ESP-IDF 构建，重新记录固件大小和 SHA-256，再进行真机启动、远程 MQTT、配网页和局域网回归。不得把当前设备中的 `.4` 二进制哈希当作提交 `d891417` 重新构建产物的哈希。
