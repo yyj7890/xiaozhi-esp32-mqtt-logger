@@ -43,7 +43,7 @@ config AIOT_MQTT_LOG_PASSWORD
 config AIOT_MQTT_LOG_DEVICE_CODE
     string "AIoT deviceCode"
     depends on AIOT_MQTT_LOG_ENABLED
-    default "XIAOZHI-001"
+    default ""
     help
         Used in aiot/device/{deviceCode}/report. Empty derives xiaozhi-{WiFi MAC}.
 

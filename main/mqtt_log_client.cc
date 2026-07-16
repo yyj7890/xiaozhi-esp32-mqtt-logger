@@ -14,11 +14,72 @@
 #include <esp_timer.h>
 #include <lwip/inet.h>
 #include <lwip/sockets.h>
+#include <mbedtls/private_access.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/x509.h>
+#include <mbedtls/x509_crt.h>
 
 namespace {
 constexpr const char* TAG = "MqttLog";
 constexpr const char* kDiscoveryProtocol = "aiot-mqtt-discovery-v1";
 constexpr std::time_t kValidUnixTime = 1700000000;
+
+using CertificateVerifyCallback = int (*)(void*, mbedtls_x509_crt*, int, uint32_t*);
+
+struct BundleVerifyDelegate {
+    CertificateVerifyCallback callback = nullptr;
+    void* context = nullptr;
+};
+
+BundleVerifyDelegate remote_bundle_verify_delegate;
+
+bool GetTrustedUtcTime(mbedtls_x509_time* current) {
+    if (current == nullptr) return false;
+    const std::time_t now = std::time(nullptr);
+    if (now < kValidUnixTime) return false;
+    std::tm utc{};
+    if (gmtime_r(&now, &utc) == nullptr) return false;
+    current->year = utc.tm_year + 1900;
+    current->mon = utc.tm_mon + 1;
+    current->day = utc.tm_mday;
+    current->hour = utc.tm_hour;
+    current->min = utc.tm_min;
+    current->sec = utc.tm_sec;
+    return true;
+}
+
+int RemoteCertificateVerify(void*, mbedtls_x509_crt* certificate, int depth, uint32_t* flags) {
+    if (remote_bundle_verify_delegate.callback == nullptr || certificate == nullptr || flags == nullptr) {
+        return MBEDTLS_ERR_X509_FATAL_ERROR;
+    }
+    const int result = remote_bundle_verify_delegate.callback(
+        remote_bundle_verify_delegate.context, certificate, depth, flags);
+    if (result != 0) return result;
+    mbedtls_x509_time current{};
+    if (!GetTrustedUtcTime(&current)) {
+        *flags |= MBEDTLS_X509_BADCERT_FUTURE;
+        return 0;
+    }
+    if (mbedtls_x509_time_cmp(&current, &certificate->valid_from) < 0) {
+        *flags |= MBEDTLS_X509_BADCERT_FUTURE;
+    }
+    if (mbedtls_x509_time_cmp(&current, &certificate->valid_to) > 0) {
+        *flags |= MBEDTLS_X509_BADCERT_EXPIRED;
+    }
+    return 0;
+}
+
+esp_err_t AttachRemoteCertificateBundle(void* configuration) {
+    if (configuration == nullptr) return ESP_ERR_INVALID_ARG;
+    const esp_err_t result = esp_crt_bundle_attach(configuration);
+    if (result != ESP_OK) return result;
+    auto* ssl_configuration = static_cast<mbedtls_ssl_config*>(configuration);
+    remote_bundle_verify_delegate.callback = ssl_configuration->MBEDTLS_PRIVATE(f_vrfy);
+    remote_bundle_verify_delegate.context = ssl_configuration->MBEDTLS_PRIVATE(p_vrfy);
+    if (remote_bundle_verify_delegate.callback == nullptr) return ESP_FAIL;
+    mbedtls_ssl_conf_verify(ssl_configuration, RemoteCertificateVerify, nullptr);
+    return ESP_OK;
+}
 
 bool IsAcceptedStatus(const std::string& status) {
     return status == "NORMAL" || status == "ABNORMAL" ||
@@ -26,7 +87,7 @@ bool IsAcceptedStatus(const std::string& status) {
 }
 
 bool IsAcceptedLevel(const std::string& level) {
-    return level == "INFO" || level == "WARN" || level == "ERROR";
+    return level == "INFO" || level == "WARNING" || level == "ERROR";
 }
 
 void CopyUtf8(char* destination, size_t destination_size, const std::string& source) {
@@ -59,32 +120,46 @@ void MqttLogClient::Start() {
     return;
 #else
     if (started_) return;
+    startup_verification_required_.store(false);
     startup_verification_succeeded_.store(false);
     startup_verification_failed_.store(false);
     {
         std::lock_guard<std::mutex> lock(startup_verification_mutex_);
         startup_verification_reason_.clear();
     }
-    // This is an optional local-only feature. A compiled client is inert until
+    // This is an optional, independent logging feature. A compiled client is inert until
     // its captive-portal switch is enabled in the independent aiot_log NVS
     // namespace. It must not inherit any old build-time host or credentials.
     const AiotLogConfig runtime_config = AiotLogConfigStore::Load();
     if (!runtime_config.enabled) {
-        ESP_LOGI(TAG, "Optional local IoT logging is disabled");
+        ESP_LOGI(TAG, "Optional AIoT logging is disabled");
         return;
     }
-    startup_verification_required_.store(true);
-    if (runtime_config.username.empty() || runtime_config.password.empty()) {
-        SetStartupVerificationFailed("MQTT username and password are required when local logging is enabled");
-        ESP_LOGW(TAG, "Local IoT logging enabled without MQTT credentials");
+    remote_mode_ = runtime_config.remote_mode;
+    // Preserve the existing LAN startup gate. The new remote profile is
+    // deliberately best-effort: DNS, TLS or credential failures must never
+    // prevent the official XiaoZhi services from starting.
+    startup_verification_required_.store(!remote_mode_);
+    const AiotLogProfile& active_profile = runtime_config.ActiveProfile();
+    if (active_profile.username.empty() || active_profile.password.empty()) {
+        if (!remote_mode_) {
+            SetStartupVerificationFailed(
+                "MQTT username and password are required when local logging is enabled");
+        }
+        ESP_LOGW(TAG, "%s AIoT logging enabled without MQTT credentials; reporting disabled",
+            remote_mode_ ? "Remote" : "LAN");
         return;
     }
-    fallback_broker_.host = runtime_config.manual_host;
-    fallback_broker_.port = runtime_config.port;
-    fallback_broker_.tls = false;
+    if (remote_mode_ && !AiotLogConfigStore::IsValidRemoteHostname(active_profile.host)) {
+        ESP_LOGW(TAG, "Remote AIoT hostname is invalid; reporting disabled");
+        return;
+    }
+    fallback_broker_.host = active_profile.host;
+    fallback_broker_.port = active_profile.port;
+    fallback_broker_.tls = active_profile.tls;
     active_broker_ = fallback_broker_;
-    username_ = runtime_config.username;
-    password_ = runtime_config.password;
+    username_ = active_profile.username;
+    password_ = active_profile.password;
     keepalive_seconds_ = CONFIG_AIOT_MQTT_LOG_KEEPALIVE;
     retry_min_ms_ = CONFIG_AIOT_MQTT_LOG_RETRY_MIN_SECONDS * 1000U;
     retry_delay_ms_ = retry_min_ms_;
@@ -97,7 +172,7 @@ void MqttLogClient::Start() {
     discovery_port_ = CONFIG_AIOT_MQTT_LOG_DISCOVERY_PORT;
     discovery_timeout_ms_ = CONFIG_AIOT_MQTT_LOG_DISCOVERY_TIMEOUT_MS;
     discovery_retries_ = CONFIG_AIOT_MQTT_LOG_DISCOVERY_RETRIES;
-    discovery_token_ = runtime_config.discovery_token;
+    discovery_token_ = runtime_config.lan.discovery_token;
 #endif
     queue_ = xQueueCreate(kQueueDepth, sizeof(LogRecord));
     mqtt_events_ = xEventGroupCreate();
@@ -130,7 +205,11 @@ void MqttLogClient::Log(const std::string& event_type, const std::string& level,
     LogRecord record{};
     record.is_event_log = true;
     std::snprintf(record.event_type, sizeof(record.event_type), "%s", event_type.c_str());
-    std::snprintf(record.level, sizeof(record.level), "%s", IsAcceptedLevel(level) ? level.c_str() : "ERROR");
+    // Keep the wire format aligned with the IoT API enum. Accept legacy internal
+    // callers using WARN, but always publish the canonical WARNING value.
+    const std::string normalized_level = level == "WARN" ? "WARNING" : level;
+    std::snprintf(record.level, sizeof(record.level), "%s",
+        IsAcceptedLevel(normalized_level) ? normalized_level.c_str() : "ERROR");
     CopyUtf8(record.message, sizeof(record.message), message);
     std::snprintf(record.reported_at, sizeof(record.reported_at), "%s", GetReportedAt().c_str());
     if (xQueueSend(queue_, &record, 0) != pdPASS) {
@@ -139,16 +218,20 @@ void MqttLogClient::Log(const std::string& event_type, const std::string& level,
 }
 
 void MqttLogClient::RequestDiscovery() {
-#if CONFIG_AIOT_MQTT_LOG_DISCOVERY_ENABLED
     if (started_) {
+        network_transition_.store(true);
         discovery_requested_.store(true);
         if (task_handle_) xTaskNotifyGive(task_handle_);
     }
-#endif
 }
 
 void MqttLogClient::NotifyNetworkDisconnected() {
     if (started_) {
+        // Set this in the Wi-Fi callback instead of waiting for the worker.
+        // ESP-MQTT may emit DISCONNECTED first; it is expected during a network
+        // switch and must not be counted as a broker failure.
+        network_transition_.store(true);
+        network_ready_.store(false);
         network_disconnected_.store(true);
         if (task_handle_) xTaskNotifyGive(task_handle_);
     }
@@ -191,6 +274,9 @@ void MqttLogClient::TaskLoop() {
     while (true) {
         if (network_disconnected_.exchange(false)) {
             network_ready_.store(false);
+            mqtt_failure_pending_.store(false);
+            mqtt_failure_reportable_.store(false);
+            ResetConnectionFailureTracking();
             ResetMqtt();
             active_broker_ = fallback_broker_;
             using_discovered_broker_ = false;
@@ -199,61 +285,98 @@ void MqttLogClient::TaskLoop() {
                 last_discovered_broker_host_.clear();
             }
             next_retry_at_ms_ = 0;
+            retry_delay_ms_ = retry_min_ms_;
         }
         if (discovery_requested_.exchange(false)) {
-            DiscoverBroker();
-            // Discovery is requested only from the Wi-Fi-connected callback. Whether it
-            // finds a broker or falls back, lwIP is now safe for the background client.
-            network_ready_.store(true);
+            if (remote_mode_) {
+                active_broker_ = fallback_broker_;
+                using_discovered_broker_ = false;
+                std::lock_guard<std::mutex> lock(discovered_broker_mutex_);
+                last_discovered_broker_host_.clear();
+            } else {
+                DiscoverBroker();
+            }
+            // This request comes from the Wi-Fi-connected callback. In remote mode it
+            // intentionally skips UDP discovery; either way lwIP is now safe for MQTT.
             ResetMqtt();
+            mqtt_failure_pending_.store(false);
+            mqtt_failure_reportable_.store(false);
+            ResetConnectionFailureTracking();
+            retry_delay_ms_ = retry_min_ms_;
             next_retry_at_ms_ = 0;
+            network_ready_.store(true);
+            network_transition_.store(false);
         }
         if (!has_pending && xQueueReceive(queue_, &pending, pdMS_TO_TICKS(250)) == pdPASS) {
             has_pending = true;
         }
-        if (!has_pending) continue;
         if (!network_ready_.load()) {
             // Startup records wait here until the Wi-Fi callback marks lwIP ready.
             // Yielding is essential: this task shares CPU1 with the idle watchdog.
-            vTaskDelay(pdMS_TO_TICKS(100));
+            if (has_pending) vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+        // An unexpected broker disconnect must reconnect even when no application
+        // record is waiting. The recovered/failure events are queued after the
+        // connection is restored and are published by the same low-priority task.
+        if (!has_pending && !mqtt_failure_pending_.load()) continue;
         const int64_t now_ms = esp_timer_get_time() / 1000;
         if (now_ms < next_retry_at_ms_) {
             vTaskDelay(pdMS_TO_TICKS(std::min<int64_t>(next_retry_at_ms_ - now_ms, 250)));
             continue;
         }
-        if (!EnsureConnected()) {
-            mqtt_failure_pending_.store(true);
+        const ConnectionAttemptResult connection_result = EnsureConnected();
+        if (connection_result != ConnectionAttemptResult::Connected) {
+            if (connection_result == ConnectionAttemptResult::Failed) {
+                mqtt_failure_pending_.store(true);
+                RecordConnectionFailure(now_ms);
+            }
             if (startup_verification_required_.load() && !startup_verification_succeeded_.load()) {
-                SetStartupVerificationFailed("MQTT username/password or broker connection verification failed");
+                if (connection_result == ConnectionAttemptResult::Failed) {
+                    SetStartupVerificationFailed("MQTT username/password or broker connection verification failed");
+                }
             }
             // A syntactically valid discovery response can still name a stale or
             // temporarily unreachable broker. Do not let it block the configured
             // manual fallback indefinitely.
-            if (using_discovered_broker_) {
+            if (connection_result == ConnectionAttemptResult::Failed && using_discovered_broker_) {
                 ESP_LOGW(TAG, "Discovered broker unreachable; falling back to manual broker %s:%d",
                     fallback_broker_.host.c_str(), fallback_broker_.port);
                 ResetMqtt();
                 active_broker_ = fallback_broker_;
                 using_discovered_broker_ = false;
             }
-            ScheduleRetry();
+            if (connection_result == ConnectionAttemptResult::Deferred) {
+                ScheduleDeferredRetry();
+            } else {
+                ScheduleRetry();
+            }
             continue;
         }
-        if (mqtt_failure_pending_.exchange(false)) {
-            Log("mqtt_failure", "ERROR", "Log MQTT connection failed and was retried");
-            Log("mqtt_reconnected", "INFO", "Log MQTT connection recovered");
+        mqtt_failure_pending_.store(false);
+        if (mqtt_failure_reportable_.exchange(false)) {
+            mqtt_connected_once_ = true;
+            Log("mqtt_connection_failed", "ERROR", remote_mode_
+                ? "Remote log MQTT TLS connection failed and was retried"
+                : "Log MQTT connection failed and was retried");
+            Log("mqtt_reconnected", "INFO", remote_mode_
+                ? "Remote log MQTT TLS connection recovered"
+                : "Log MQTT connection recovered");
         } else if (!mqtt_connected_once_) {
             mqtt_connected_once_ = true;
-            Log("mqtt_connected", "INFO", "Log MQTT connected");
+            Log("mqtt_connected", "INFO", remote_mode_
+                ? "Remote log MQTT TLS connected"
+                : "Log MQTT connected");
         }
+        ResetConnectionFailureTracking();
         SetStartupVerificationSucceeded();
+        retry_delay_ms_ = retry_min_ms_;
+        if (!has_pending) continue;
         if (Publish(pending)) {
             has_pending = false;
-            retry_delay_ms_ = retry_min_ms_;
         } else {
             mqtt_failure_pending_.store(true);
+            RecordConnectionFailure(esp_timer_get_time() / 1000);
             ResetMqtt();
             ScheduleRetry();
         }
@@ -279,6 +402,7 @@ void MqttLogClient::SetStartupVerificationSucceeded() {
 }
 
 bool MqttLogClient::DiscoverBroker() {
+    if (remote_mode_) return false;
 #if !CONFIG_AIOT_MQTT_LOG_DISCOVERY_ENABLED
     return false;
 #else
@@ -366,46 +490,90 @@ bool MqttLogClient::IsValidDiscoveryResponse(const char* payload, const std::str
     return valid;
 }
 
-bool MqttLogClient::EnsureConnected() {
-    if (active_broker_.host.empty()) return false;
-    if (mqtt_client_ && connected_.load()) return true;
+MqttLogClient::ConnectionAttemptResult MqttLogClient::EnsureConnected() {
+    if (active_broker_.host.empty()) return ConnectionAttemptResult::Failed;
+    if (mqtt_client_ && connected_.load()) return ConnectionAttemptResult::Connected;
     ResetMqtt();
+    if (remote_mode_) {
+        mbedtls_x509_time current{};
+        if (!GetTrustedUtcTime(&current)) {
+            if (!waiting_for_trusted_time_logged_) {
+                ESP_LOGW(TAG, "Remote AIoT TLS is waiting for trusted system time");
+                waiting_for_trusted_time_logged_ = true;
+            }
+            return ConnectionAttemptResult::Deferred;
+        }
+        if (waiting_for_trusted_time_logged_) {
+            ESP_LOGI(TAG, "Trusted system time is available for remote AIoT TLS");
+            waiting_for_trusted_time_logged_ = false;
+        }
+    }
     esp_mqtt_client_config_t config{};
     config.task.stack_size = 4096;
     config.broker.address.hostname = active_broker_.host.c_str();
     config.broker.address.port = active_broker_.port;
     config.broker.address.transport = active_broker_.tls ? MQTT_TRANSPORT_OVER_SSL : MQTT_TRANSPORT_OVER_TCP;
-    if (active_broker_.tls) config.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    if (remote_mode_) {
+        if (!active_broker_.tls) return ConnectionAttemptResult::Failed;
+        config.broker.verification.crt_bundle_attach = AttachRemoteCertificateBundle;
+    } else if (active_broker_.tls) {
+        config.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+    }
+    if (active_broker_.tls) {
+        config.broker.verification.skip_cert_common_name_check = false;
+        // Keep the hostname as the verification target so ESP-IDF supplies the
+        // correct TLS SNI name for a HiveMQ Cloud multi-tenant endpoint.
+        config.broker.verification.common_name = active_broker_.host.c_str();
+    }
     config.credentials.client_id = client_id_.c_str();
     config.credentials.username = username_.c_str();
     config.credentials.authentication.password = password_.c_str();
     config.session.keepalive = keepalive_seconds_;
     mqtt_client_ = esp_mqtt_client_init(&config);
-    if (!mqtt_client_) { mqtt_failure_pending_.store(true); return false; }
+    if (!mqtt_client_) return ConnectionAttemptResult::Failed;
     xEventGroupClearBits(mqtt_events_, kMqttConnected | kMqttFailed);
     esp_mqtt_client_register_event(mqtt_client_, MQTT_EVENT_ANY, MqttEventHandler, this);
-    if (esp_mqtt_client_start(mqtt_client_) != ESP_OK) { mqtt_failure_pending_.store(true); ResetMqtt(); return false; }
+    if (esp_mqtt_client_start(mqtt_client_) != ESP_OK) {
+        ResetMqtt();
+        return ConnectionAttemptResult::Failed;
+    }
     EventBits_t bits = xEventGroupWaitBits(mqtt_events_, kMqttConnected | kMqttFailed, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
-    return (bits & kMqttConnected) != 0;
+    return (bits & kMqttConnected) != 0
+        ? ConnectionAttemptResult::Connected
+        : ConnectionAttemptResult::Failed;
 }
 
 void MqttLogClient::ResetMqtt() {
     connected_.store(false);
     if (mqtt_client_) {
+        mqtt_stop_expected_.store(true);
         esp_mqtt_client_stop(mqtt_client_);
         esp_mqtt_client_destroy(mqtt_client_);
         mqtt_client_ = nullptr;
+        mqtt_stop_expected_.store(false);
     }
 }
 
-void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32_t event_id, void*) {
+void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32_t event_id, void* event_data) {
     auto* self = static_cast<MqttLogClient*>(handler_args);
+    auto* event = static_cast<esp_mqtt_event_handle_t>(event_data);
+    if (event != nullptr && self->mqtt_client_ != nullptr && event->client != self->mqtt_client_) {
+        return;
+    }
     if (event_id == MQTT_EVENT_CONNECTED) {
         self->connected_.store(true);
         xEventGroupSetBits(self->mqtt_events_, kMqttConnected);
     } else if (event_id == MQTT_EVENT_ERROR || event_id == MQTT_EVENT_DISCONNECTED) {
         self->connected_.store(false);
+        if (self->mqtt_stop_expected_.load() ||
+            self->network_transition_.load() ||
+            !self->network_ready_.load()) {
+            return;
+        }
         self->mqtt_failure_pending_.store(true);
+        if (!self->remote_mode_) {
+            self->mqtt_failure_reportable_.store(true);
+        }
         xEventGroupSetBits(self->mqtt_events_, kMqttFailed);
     }
 }
@@ -416,6 +584,10 @@ bool MqttLogClient::Publish(const LogRecord& record) {
     if (record.is_event_log) {
         cJSON_AddStringToObject(root, "eventType", record.event_type);
         cJSON_AddStringToObject(root, "level", record.level);
+        // The backend accepts exactly RUNNING, ERROR, MAINTENANCE or
+        // INSPECTION. Operational firmware events map to the first two.
+        cJSON_AddStringToObject(root, "logType",
+            std::strcmp(record.level, "ERROR") == 0 ? "ERROR" : "RUNNING");
     } else {
         cJSON_AddStringToObject(root, "status", record.status);
     }
@@ -442,6 +614,30 @@ bool MqttLogClient::Publish(const LogRecord& record) {
 void MqttLogClient::ScheduleRetry() {
     next_retry_at_ms_ = esp_timer_get_time() / 1000 + retry_delay_ms_;
     retry_delay_ms_ = std::min(retry_delay_ms_ * 2U, retry_max_ms_);
+}
+
+void MqttLogClient::ScheduleDeferredRetry() {
+    // Waiting for SNTP/OTA time is a prerequisite, not a connection failure.
+    // Poll it at a short fixed cadence so a time update is used promptly instead
+    // of being delayed by the normal 5/10/20/40 second failure backoff.
+    next_retry_at_ms_ = esp_timer_get_time() / 1000 + kDeferredRetryMs;
+}
+
+void MqttLogClient::RecordConnectionFailure(int64_t now_ms) {
+    if (first_connection_failure_at_ms_ == 0) {
+        first_connection_failure_at_ms_ = now_ms;
+    }
+    ++consecutive_connection_failures_;
+    if (!remote_mode_ ||
+        consecutive_connection_failures_ >= kRemoteFailureAttemptThreshold ||
+        now_ms - first_connection_failure_at_ms_ >= kRemoteFailureGraceMs) {
+        mqtt_failure_reportable_.store(true);
+    }
+}
+
+void MqttLogClient::ResetConnectionFailureTracking() {
+    consecutive_connection_failures_ = 0;
+    first_connection_failure_at_ms_ = 0;
 }
 
 std::string MqttLogClient::BuildDeviceCode() const {

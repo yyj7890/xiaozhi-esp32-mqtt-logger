@@ -1,5 +1,10 @@
 tmp/
-components/
+components/*
+!components/aiot_log_config/
+!components/aiot_log_config/**
+!components/esp-wifi-connect/
+!components/esp-wifi-connect/**
+components/esp-wifi-connect/.component_hash
 managed_components/
 build/
 dist/

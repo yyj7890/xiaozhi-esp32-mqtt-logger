@@ -172,7 +172,7 @@ void Application::Initialize() {
             case NetworkEvent::Disconnected:
                 MqttLogClient::GetInstance().NotifyNetworkDisconnected();
                 MqttLogClient::GetInstance().Report("OFFLINE", "Wi-Fi disconnected");
-                MqttLogClient::GetInstance().Log("wifi_disconnected", "WARN", "Wi-Fi disconnected");
+                MqttLogClient::GetInstance().Log("wifi_disconnected", "WARNING", "Wi-Fi disconnected");
                 break;
             default:
                 break;
@@ -378,9 +378,8 @@ void Application::ActivationTask() {
     // Create OTA object for activation process
     ota_ = std::make_unique<Ota>();
 
-    // Local logging is optional only while disabled. Once the portal switch is
-    // enabled, successful MQTT credential/broker verification is required
-    // before this device may activate either local or official XiaoZhi AI.
+    // Preserve the existing LAN-log verification gate. The remote profile is
+    // best-effort, so this returns immediately and cannot block XiaoZhi AI.
     std::string mqtt_verification_reason;
     if (!MqttLogClient::GetInstance().WaitForStartupVerification(12000, &mqtt_verification_reason)) {
         ESP_LOGW(TAG, "Local IoT MQTT startup verification failed: %s", mqtt_verification_reason.c_str());
@@ -416,7 +415,7 @@ void Application::ActivationTask() {
         // There is no local candidate without a response in this boot. A
         // cached URL, a log-broker address, or a prior boot is not discovery.
         local_ai_fallback_pending_.store(true);
-        MqttLogClient::GetInstance().Log("local_ai_discovery_failed", "WARN", "No valid local AI discovery response this boot");
+        MqttLogClient::GetInstance().Log("local_ai_discovery_failed", "WARNING", "No valid local AI discovery response this boot");
     }
 
     // Check for new assets version
@@ -620,7 +619,7 @@ void Application::InitializeProtocol() {
                 MqttLogClient::GetInstance().Log("official_ai_connected", "INFO", "Official AI protocol connected");
             }
             if (local_ai_fallback_pending_.load() && !local_ai_fallback_reported_.exchange(true)) {
-                MqttLogClient::GetInstance().Log("local_ai_fallback_to_official", "WARN", "Local AI unavailable; official AI connected");
+                MqttLogClient::GetInstance().Log("local_ai_fallback_to_official", "WARNING", "Local AI unavailable; official AI connected");
             }
         }
         DismissAlert();
