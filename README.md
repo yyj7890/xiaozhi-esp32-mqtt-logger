@@ -1,5 +1,19 @@
 # 小智 ESP32 MQTT Logger
 
+> 当前分支：`feature/synology-mcp-bridge`
+
+## 群晖 MCP 部署分支
+
+这个分支在保留原有 ESP32 固件代码的基础上，新增了群晖上的小智 MCP 桥接部署方案：
+
+`官方小智 AI → 群晖 MCP 桥接器 → Home Assistant → 灯、空调等智能家居设备`
+
+- 部署文件：[deploy/synology-mcp-bridge](deploy/synology-mcp-bridge)
+- 项目计划与进度：[PROJECT_PLAN.md](deploy/synology-mcp-bridge/PROJECT_PLAN.md)
+- 群晖部署说明：[README.md](deploy/synology-mcp-bridge/README.md)
+
+密钥只填写在群晖本地的 `bridge.env`，不会上传到 GitHub。
+
 基于 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) 的个人定制固件：在不改变小智官方 AI 通信逻辑的前提下，为设备增加独立、低优先级的 MQTT 日志上报与局域网自动发现能力。
 
 > 这是个人维护的固件仓库，不是小智官方发布渠道。仓库仅包含固件，不包含后端服务端代码、模型文件或任何私有配置。
