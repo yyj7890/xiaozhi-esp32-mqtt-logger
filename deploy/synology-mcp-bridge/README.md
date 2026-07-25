@@ -29,6 +29,12 @@
 
 `bridge.env` 已被 `.gitignore` 忽略，绝不能提交到 GitHub。不要公开 MCP 地址中的 token 或 Home Assistant 长期访问令牌。
 
+## 仓库与分支说明
+
+本目录保存在主项目的 `feature/synology-mcp-bridge` 分支中。Git 分支会保留主项目的完整基础文件；本分支相对基础分支新增的内容只有 `deploy/synology-mcp-bridge` 目录。这样可以将群晖 MCP 部署与小智主项目放在同一个版本历史中，同时不影响其他分支。
+
+部署进度和后续计划请查看 [PROJECT_PLAN.md](PROJECT_PLAN.md)。
+
 ## 笔记本功能
 
 群晖负责长期在线的智能家居工具。打开 Windows 应用或调用笔记本摄像头，仍需笔记本上运行独立代理；笔记本离线时这些工具不可用。只应提供白名单操作，例如 `pc_open_app`、`pc_get_status`、`pc_take_photo`，不要开放任意 Shell 或 PowerShell 执行能力。
