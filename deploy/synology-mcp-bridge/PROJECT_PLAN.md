@@ -16,20 +16,21 @@
 - [x] 在群晖 Container Manager 创建 `xiaozhi-mcp-bridge` 项目。
 - [x] 将部署文件与说明提交到 `feature/synology-mcp-bridge` 分支。
 - [x] 排除 `bridge.env`，避免 MCP 地址和 Home Assistant 令牌进入 GitHub。
+- [x] 离线导入并启动 Home Assistant，完成管理员账号初始化。
+- [x] 安装 `Midea Smart AC 2026.7.1`，接入华凌空调并验证状态读取与控制。
 
 ## 当前进行中
 
-- [ ] 等待群晖首次下载并启动 Home Assistant。
-- [ ] 在浏览器访问 `http://群晖局域网IP:8123`，完成 Home Assistant 初始设置。
+- [ ] 添加并配置 Home Assistant 的 `Model Context Protocol Server` 集成。
+- [ ] 只向小智开放明确授权的空调实体。
 
 ## 下一步
 
-1. 在 Home Assistant 添加家里的灯、空调等设备集成。
-2. 添加并配置 `Model Context Protocol Server` 集成，只开放允许小智控制的实体。
-3. 创建 Home Assistant 长期访问令牌。
-4. 从小智官方控制台取得 MCP 地址。
-5. 仅在群晖本地的 `bridge.env` 中填写两项令牌，并重新构建项目。
-6. 先用一盏灯验证“打开/关闭”指令，再逐步开放空调和插座。
+1. 创建 Home Assistant 长期访问令牌。
+2. 从小智官方控制台取得 MCP 地址。
+3. 仅在群晖本地的 `bridge.env` 中填写两项令牌，并重新构建项目。
+4. 用华凌空调验证开关、制冷模式和温度设置指令。
+5. 后续再添加灯、插座等设备，并逐个开放对应实体。
 
 ## 后续扩展（未开始）
 
