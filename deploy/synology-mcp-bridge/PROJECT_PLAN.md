@@ -1,6 +1,6 @@
 # 群晖小智 MCP 项目计划
 
-最后更新：2026-07-25
+最后更新：2026-07-26
 
 ## 项目目标
 
@@ -20,19 +20,21 @@
 - [x] 排除 `bridge.env`，避免 MCP 地址和 Home Assistant 令牌进入 GitHub。
 - [x] 离线导入并启动 Home Assistant，完成管理员账号初始化。
 - [x] 安装 `Midea Smart AC 2026.7.1`，接入华凌空调并验证状态读取与控制。
+- [x] 通过小智官方 MCP 成功控制空调。
+- [x] 完成 Windows 笔记本 MCP 本地代理：状态、白名单应用启动、当前摄像头画面和拍照。
 
 ## 当前进行中
 
-- [ ] 添加并配置 Home Assistant 的 `Model Context Protocol Server` 集成。
-- [ ] 只向小智开放明确授权的空调实体。
+- [x] 添加并配置 Home Assistant 的 `Model Context Protocol Server` 集成。
+- [x] 只向小智开放明确授权的空调实体。
+- [ ] 将笔记本 MCP 代理接入群晖桥接器，并在小智控制台验证电脑和摄像头工具。
 
 ## 下一步
 
-1. 创建 Home Assistant 长期访问令牌。
-2. 从小智官方控制台取得 MCP 地址。
-3. 仅在群晖本地的 `bridge.env` 中填写两项令牌，并重新构建项目。
-4. 用华凌空调验证开关、制冷模式和温度设置指令。
-5. 后续再添加灯、插座等设备，并逐个开放对应实体。
+1. 在笔记本的 `agent-status.txt` 取得 Tailscale MCP 地址。
+2. 在群晖本地 `bridge.env` 增加 `PC_MCP_URL`，再重建桥接容器。
+3. 在小智控制台验证 `pc_get_status`、白名单应用、`pc_see_camera` 与 `pc_take_photo`。
+4. 后续添加灯、插座等设备，并逐个开放对应实体。
 
 ## 后续扩展（未开始）
 

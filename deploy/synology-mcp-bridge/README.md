@@ -24,6 +24,7 @@
 4. 访问 `http://群晖局域网IP:8123`，完成 Home Assistant 初始设置。
 5. 在 Home Assistant 添加 `Model Context Protocol Server` 集成，只向 Assist 暴露需要控制的实体。
 6. 复制 `bridge.env.example` 为 `bridge.env`，填入小智 MCP 地址和 Home Assistant 长期访问令牌，然后重新构建项目。
+7. 如需接入笔记本代理，在同一文件增加 `PC_MCP_URL=http://笔记本Tailscale地址:8765/mcp`。该项留空时，桥接器只提供 Home Assistant 工具。
 
 ## 密钥安全
 

@@ -55,9 +55,15 @@ def main() -> None:
     )
     ha_token = required_env("HA_TOKEN")
 
-    config = {
-        "mcpServers": {"home-assistant": {"type": "http", "url": ha_url}}
-    }
+    servers = {"home-assistant": {"type": "http", "url": ha_url}}
+    pc_url = os.environ.get("PC_MCP_URL", "").strip()
+    if pc_url:
+        servers["windows-laptop"] = {
+            "type": "http",
+            "url": validate_url("PC_MCP_URL", pc_url, {"http", "https"}),
+        }
+
+    config = {"mcpServers": servers}
     GENERATED_CONFIG.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
     os.chmod(GENERATED_CONFIG, 0o600)
 
@@ -67,7 +73,7 @@ def main() -> None:
     os.environ["API_ACCESS_TOKEN"] = ha_token
 
     wait_for_home_assistant(ha_url)
-    print("Starting Xiaozhi MCP bridge for Home Assistant", flush=True)
+    print(f"Starting Xiaozhi MCP bridge for: {', '.join(servers)}", flush=True)
     os.execv(sys.executable, [sys.executable, str(MCP_PIPE)])
 
 

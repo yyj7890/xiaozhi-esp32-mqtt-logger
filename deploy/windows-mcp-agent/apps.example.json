@@ -1,0 +1,13 @@
+{
+  "camera_index": 0,
+  "photo_max_width": 1280,
+  "allowed_apps": {
+    "记事本": {
+      "path": "C:\\Windows\\System32\\notepad.exe"
+    },
+    "计算器": {
+      "path": "C:\\Windows\\System32\\calc.exe"
+    }
+  }
+}
+
