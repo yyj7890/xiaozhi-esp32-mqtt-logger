@@ -4,9 +4,12 @@ This agent is deliberately restrictive. It exposes only:
 
 - laptop status;
 - launching entries explicitly listed in `apps.json`;
+- direct voice-friendly tools for selected approved applications, including WeGame and VALORANT;
 - one current camera image per tool call, returned directly to XiaoZhi.
 
 It never accepts arbitrary PowerShell, shell commands, URLs, command-line arguments, or file paths from XiaoZhi.
+
+For applications that voice models commonly misclassify as privileged (such as game launchers), the agent also offers an explicit tool such as `pc_open_wegame` or `pc_open_valorant`. These tools still run only the fixed, owner-approved executable and never elevate Windows privileges.
 
 ## Setup
 

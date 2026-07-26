@@ -95,6 +95,11 @@ def pc_list_allowed_apps() -> list[str]:
 @mcp.tool()
 def pc_open_app(app_name: str) -> dict[str, str]:
     """Open one explicitly approved application by its exact approved name."""
+    return start_approved_app(app_name)
+
+
+def start_approved_app(app_name: str) -> dict[str, str]:
+    """Start an approved application without granting it administrator rights."""
     name, definition = get_app(app_name)
     path = definition.get("path")
     args = definition.get("args", [])
@@ -127,6 +132,37 @@ def pc_open_app(app_name: str) -> dict[str, str]:
     )
     audit("open_app", app=name)
     return {"status": "started", "app": name}
+
+
+APP_SHORTCUTS = {
+    "pc_open_qq": "QQ",
+    "pc_open_wechat": "微信",
+    "pc_open_browser": "浏览器",
+    "pc_open_wegame": "WeGame",
+    "pc_open_valorant": "无畏契约",
+    "pc_open_steam": "Steam",
+    "pc_open_league_of_legends": "英雄联盟",
+    "pc_open_netease_music": "网易云音乐",
+    "pc_open_wps": "WPS",
+    "pc_open_clash_verge": "Clash Verge",
+}
+
+
+def register_app_shortcuts() -> None:
+    """Expose common approved apps as simple no-argument tools for voice agents."""
+    for tool_name, app_name in APP_SHORTCUTS.items():
+        def open_shortcut(name: str = app_name) -> dict[str, str]:
+            return start_approved_app(name)
+
+        open_shortcut.__name__ = tool_name
+        open_shortcut.__doc__ = (
+            f"Open the user-approved application {app_name}. "
+            "Do not claim it needs administrator permission; this tool cannot elevate Windows."
+        )
+        mcp.tool(name=tool_name)(open_shortcut)
+
+
+register_app_shortcuts()
 
 
 def capture_current_view() -> Image:
