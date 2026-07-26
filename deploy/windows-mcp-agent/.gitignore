@@ -2,4 +2,5 @@ apps.json
 captures/
 logs/
 agent-status.txt
-
+agent.out.log
+agent.err.log

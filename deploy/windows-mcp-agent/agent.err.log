@@ -1,8 +1,0 @@
-[07/26/26 12:08:02] INFO     Starting MCP server 'Windows      transport.py:361
-                             Laptop Controls' with transport                   
-                             'streamable-http' (stateless) on                  
-                             http://100.112.77.84:8765/mcp                     
-INFO:     Started server process [12100]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://100.112.77.84:8765 (Press CTRL+C to quit)
