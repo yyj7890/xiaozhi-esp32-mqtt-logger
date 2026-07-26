@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import socket
@@ -163,6 +164,41 @@ def register_app_shortcuts() -> None:
 
 
 register_app_shortcuts()
+
+
+def confirm_then_start(app_name: str) -> dict[str, str]:
+    """Ask the person at the laptop before starting a selected game launcher."""
+    approved_name, _ = get_app(app_name)
+    answer = ctypes.windll.user32.MessageBoxW(
+        0,
+        f"小智请求启动“{approved_name}”。\n\n仅当您点击“是”后才会启动。",
+        "小智电脑确认",
+        0x00000004 | 0x00000020,  # MB_YESNO | MB_ICONQUESTION
+    )
+    if answer != 6:  # IDYES
+        audit("start_cancelled", app=approved_name)
+        return {"status": "cancelled", "app": approved_name}
+    result = start_approved_app(approved_name)
+    audit("start_confirmed", app=approved_name)
+    return result
+
+
+@mcp.tool()
+def pc_confirm_start_wegame() -> dict[str, str]:
+    """Show a confirmation on the laptop before starting WeGame. No Windows elevation is used."""
+    return confirm_then_start("WeGame")
+
+
+@mcp.tool()
+def pc_confirm_start_valorant() -> dict[str, str]:
+    """Show a confirmation on the laptop before starting VALORANT. No Windows elevation is used."""
+    return confirm_then_start("无畏契约")
+
+
+@mcp.tool()
+def pc_confirm_start_league_of_legends() -> dict[str, str]:
+    """Show a confirmation on the laptop before starting League of Legends. No Windows elevation is used."""
+    return confirm_then_start("英雄联盟")
 
 
 def capture_current_view() -> Image:

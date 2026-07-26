@@ -11,6 +11,8 @@ It never accepts arbitrary PowerShell, shell commands, URLs, command-line argume
 
 For applications that voice models commonly misclassify as privileged (such as game launchers), the agent also offers an explicit tool such as `pc_open_wegame` or `pc_open_valorant`. These tools still run only the fixed, owner-approved executable and never elevate Windows privileges.
 
+For games, prefer `pc_confirm_start_wegame`, `pc_confirm_start_valorant`, or `pc_confirm_start_league_of_legends`. The tool first shows a confirmation dialog on the laptop; it launches nothing until the person at the laptop clicks **Yes**. This is designed for an interactive signed-in Windows session, not a background Scheduled Task session.
+
 ## Setup
 
 1. Copy `apps.example.json` to `apps.json`.
