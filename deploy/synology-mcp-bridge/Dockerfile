@@ -9,10 +9,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates git \
-    && git clone "\${MCP_PIPE_REPOSITORY}" /opt/mcp-pipe \
+    && git clone "${MCP_PIPE_REPOSITORY}" /opt/mcp-pipe \
     && cd /opt/mcp-pipe \
-    && git checkout --detach "\${MCP_PIPE_REF}" \
+    && git checkout --detach "${MCP_PIPE_REF}" \
     && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps --force-reinstall "websockets==14.2" \
     && apt-get purge --yes --auto-remove git \
     && rm -rf /var/lib/apt/lists/* /opt/mcp-pipe/.git
 

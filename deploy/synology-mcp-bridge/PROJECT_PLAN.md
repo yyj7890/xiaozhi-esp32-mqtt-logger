@@ -13,6 +13,8 @@
 - [x] 确定架构：官方小智 AI → 群晖 MCP 桥接器 → Home Assistant → 智能家居设备。
 - [x] 为 DS920+ / DSM 7.2 准备 Docker Compose 部署文件。
 - [x] 构建并导入 `local/xiaozhi-mcp-bridge:0.1.0` 预构建镜像。
+- [x] 诊断小智接入点反复返回 HTTP 401：镜像安装了不兼容的 `websockets 16.1.1`。
+- [x] 在 `0.1.1` 镜像中固定 `websockets==14.2`，兼容官方小智 MCP WebSocket 接入点。
 - [x] 在群晖 Container Manager 创建 `xiaozhi-mcp-bridge` 项目。
 - [x] 将部署文件与说明提交到 `feature/synology-mcp-bridge` 分支。
 - [x] 排除 `bridge.env`，避免 MCP 地址和 Home Assistant 令牌进入 GitHub。

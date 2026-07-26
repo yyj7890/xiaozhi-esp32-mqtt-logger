@@ -19,7 +19,7 @@
 ## 部署
 
 1. 将整个目录上传到群晖，例如 `/volume1/docker/xiaozhi-mcp-bridge`。
-2. 若已导入预构建镜像 `synology-mcp-bridge-amd64-0.1.0.tar`，将 `compose.prebuilt.yaml` 改名为 `compose.yaml`。
+2. 若已导入预构建镜像 `synology-mcp-bridge-amd64-0.1.1.tar`，将 `compose.prebuilt.yaml` 改名为 `compose.yaml`。
 3. 在 Container Manager 的“项目”中，以该目录的 `compose.yaml` 创建项目。
 4. 访问 `http://群晖局域网IP:8123`，完成 Home Assistant 初始设置。
 5. 在 Home Assistant 添加 `Model Context Protocol Server` 集成，只向 Assist 暴露需要控制的实体。
