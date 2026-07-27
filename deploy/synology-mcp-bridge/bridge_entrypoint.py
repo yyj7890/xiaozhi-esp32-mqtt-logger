@@ -54,13 +54,36 @@ def main() -> None:
         {"http", "https"},
     )
     ha_token = required_env("HA_TOKEN")
+    iot_url = validate_url(
+        "IOT_API_URL",
+        os.environ.get("IOT_API_URL", "http://127.0.0.1:8080").strip(),
+        {"http", "https"},
+    )
 
-    servers = {"home-assistant": {"type": "http", "url": ha_url}}
+    servers = {
+        "home-assistant": {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["/app/audited_mcp_proxy.py", ha_url],
+            "env": {"IOT_API_URL": iot_url},
+        },
+        "aiot-reminders": {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["/app/iot_reminder_mcp.py"],
+            "env": {"IOT_API_URL": iot_url},
+        },
+    }
     pc_url = os.environ.get("PC_MCP_URL", "").strip()
     if pc_url:
         servers["windows-laptop"] = {
-            "type": "http",
-            "url": validate_url("PC_MCP_URL", pc_url, {"http", "https"}),
+            "type": "stdio",
+            "command": sys.executable,
+            "args": [
+                "/app/audited_mcp_proxy.py",
+                validate_url("PC_MCP_URL", pc_url, {"http", "https"}),
+            ],
+            "env": {"IOT_API_URL": iot_url},
         }
 
     config = {"mcpServers": servers}

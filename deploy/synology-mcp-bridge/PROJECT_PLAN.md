@@ -1,6 +1,6 @@
 # 群晖小智 MCP 项目计划
 
-最后更新：2026-07-26
+最后更新：2026-07-27
 
 ## 项目目标
 
@@ -24,25 +24,31 @@
 - [x] 完成 Windows 笔记本 MCP 本地代理：状态、白名单应用启动、当前摄像头画面和拍照。
 - [x] 为常用应用加入独立语音启动工具，避免通用应用工具被误判为管理员操作。
 - [x] 为 WeGame、无畏契约、英雄联盟加入“笔记本本机确认后启动”工具，不授予云端管理员权限。
+- [x] 将远程 MQTT 主动播报固件与桥接器源码整合到 `feature/aiot-mcp-reminder-integration`。
+- [x] 增加 `aiot_create_reminder`、`aiot_list_reminders`、`aiot_cancel_reminder` 工具；桥接器以 IoT REST API 保存和查询提醒，不保存 MQTT 凭据。
+- [x] 为 Home Assistant 与笔记本 MCP 增加安全操作摘要审计，失败不影响原有工具调用。
 
 ## 当前进行中
 
 - [x] 添加并配置 Home Assistant 的 `Model Context Protocol Server` 集成。
 - [x] 只向小智开放明确授权的空调实体。
-- [ ] 将笔记本 MCP 代理接入群晖桥接器，并在小智控制台验证电脑和摄像头工具。
+- [ ] 在群晖本地配置 `PC_MCP_URL` 和 `IOT_API_URL`，并在小智控制台验证笔记本工具、提醒工具与审计记录。
 
 ## 下一步
 
-1. 在笔记本的 `agent-status.txt` 取得 Tailscale MCP 地址。
-2. 在群晖本地 `bridge.env` 增加 `PC_MCP_URL`，再重建桥接容器。
-3. 在小智控制台验证 `pc_get_status`、白名单应用、`pc_see_camera` 与 `pc_take_photo`。
-4. 后续添加灯、插座等设备，并逐个开放对应实体。
+1. 在笔记本的 `agent-status.txt` 取得 Tailscale MCP 地址，并在群晖私有 `bridge.env` 设置 `PC_MCP_URL`、`IOT_API_URL`。
+2. 在用户明确授权后重建桥接容器；本次代码提交不执行部署。
+3. 在小智控制台验证 `pc_get_status`、白名单应用、`pc_see_camera`、`pc_take_photo` 与三项提醒工具。
+4. 在 IoT 页面核对只记录工具名、目标摘要、结果摘要和状态，且不记录工具参数、音频或凭据。
+5. 后续添加灯、插座等设备，并逐个开放对应实体。
 
 ## 后续扩展（未开始）
 
 - 天气、网页搜索、日历等常用 MCP 工具。
 - 车票查询 MCP：需要选择可靠数据来源；若服务要求登录，凭据只保存在本地。
 - Windows 笔记本本地代理：仅允许白名单应用启动、状态查询和摄像头拍照，不开放任意命令执行。
+- 群晖本地 TTS：生成 16 kHz 单声道、60 ms 裸 Opus packet；动态语音上线前需要人工试听、MQTT 互操作和官方 AI 回归。
+- 温湿度、日志和天气条件提醒，以及静音时段、冷却与重试策略。
 
 ## 安全原则
 
@@ -50,3 +56,4 @@
 - 不把令牌、密码或摄像头内容提交到 GitHub。
 - Home Assistant 只向 MCP 暴露明确授权的设备实体。
 - 笔记本控制必须使用白名单，避免云端模型获得任意 PowerShell 或 Shell 权限。
+- 审计仅记录有限长度的工具名、目标与结果摘要；不得记录令牌、密码、原始音频、摄像头内容或完整对话。
