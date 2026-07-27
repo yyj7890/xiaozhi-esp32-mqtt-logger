@@ -86,6 +86,9 @@ void Application::Initialize() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
     audio_service_.SetCallbacks(callbacks);
+    AnnouncementManager::GetInstance().SetCallbacks(
+        {},
+        [this]() { Schedule([this]() { StartAnnouncementIfIdle(); }); });
 
     // Add state change listeners
     state_machine_.AddStateChangeListener([this](DeviceState, DeviceState) {
@@ -815,6 +818,7 @@ void Application::StopListening() {
 }
 
 void Application::HandleToggleChatEvent() {
+    InterruptAnnouncement();
     auto state = GetDeviceState();
     
     if (state == kDeviceStateActivating) {
@@ -873,6 +877,7 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+    InterruptAnnouncement();
     auto state = GetDeviceState();
     
     if (state == kDeviceStateActivating) {
@@ -921,6 +926,7 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+    InterruptAnnouncement();
     if (!protocol_) {
         return;
     }
@@ -964,6 +970,27 @@ void Application::HandleWakeWordDetectedEvent() {
         // Restart the activation check if the wake word is detected during activation
         SetDeviceState(kDeviceStateIdle);
     }
+}
+
+void Application::StartAnnouncementIfIdle() {
+    if (GetDeviceState() != kDeviceStateIdle || !active_announcement_task_id_.empty()) return;
+    AnnouncementManager::Task task;
+    if (!AnnouncementManager::GetInstance().TakePending(&task)) return;
+    active_announcement_task_id_ = task.task_id;
+    for (auto& item : task.packets) {
+        auto packet = std::make_unique<AudioStreamPacket>();
+        packet->sample_rate = 16000; packet->frame_duration = 60; packet->payload = std::move(item.payload);
+        std::function<void(bool)> complete;
+        if (item.last) complete = [this, id = task.task_id](bool output_ok) { Schedule([this, id, output_ok]() { if (active_announcement_task_id_ == id) { active_announcement_task_id_.clear(); AnnouncementManager::GetInstance().Complete(id, output_ok ? "played" : "failed", output_ok ? "" : "decode_failed"); } }); };
+        if (!audio_service_.PushPacketToDecodeQueue(std::move(packet), false, std::move(complete))) { active_announcement_task_id_.clear(); AnnouncementManager::GetInstance().Complete(task.task_id, "failed", "playback_queue_full"); return; }
+    }
+}
+
+void Application::InterruptAnnouncement() {
+    if (active_announcement_task_id_.empty()) return;
+    const auto id = active_announcement_task_id_; active_announcement_task_id_.clear();
+    audio_service_.ResetDecoder();
+    AnnouncementManager::GetInstance().Complete(id, "failed", "interrupted");
 }
 
 void Application::ContinueWakeWordInvoke(const std::string& wake_word) {

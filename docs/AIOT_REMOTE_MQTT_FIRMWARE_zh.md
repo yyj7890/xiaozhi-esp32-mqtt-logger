@@ -362,3 +362,40 @@ D:\AI\XiaoZhi\firmware-backups\xiaozhi-remote-mqtt-baseline-2026-07-16-v2.2.6-ai
 需要注意：设备上当前运行并完成真机验证的仍是第 16 节记录的 `.4` 二进制，SHA-256 为 `5929175DF1F9AD6B38F4148045A1BE2CB7316F28BC634521D6A14772FE244B06`。上述三项公开提交前隐私清理发生在该固件烧录之后，因此提交 `d891417` 的源码与设备上的 `.4` 二进制不是完全相同的源代码快照。本次已完成 `wifi_configuration_ap.cc` 定向语法编译、配网页内嵌 JavaScript 语法检查、敏感信息扫描和 `git diff --check`；由于旧构建目录缺少 Ninja 增量日志，构建系统会重新执行约 2200 个步骤，提交前未再次完成新的全量固件构建。
 
 因此，下次生成可发布固件或再次烧录前，必须基于提交 `d891417` 或其后续提交执行一次干净、完整的 ESP-IDF 构建，重新记录固件大小和 SHA-256，再进行真机启动、远程 MQTT、配网页和局域网回归。不得把当前设备中的 `.4` 二进制哈希当作提交 `d891417` 重新构建产物的哈希。
+
+## 18. 主动播报第一阶段：固定测试 Opus 语音（计划，尚未实施）
+
+本阶段仅在固件中实现固定测试 Opus 语音的安全接收、空闲播放与 MQTT ACK；不部署 TTS、不修改 `D:\AI\IOT` 后端、不烧录设备，也不做真实 MQTT 联调。官方 AI、官方 OTA、官方 WebSocket/MQTT 对话、既有 MCP、Home Assistant 与既有 `/report`、`/log` 上报必须保持不变。
+
+复用既有远程 HiveMQ TLS 连接。连接成功后订阅本机专属 Topic：
+
+```text
+aiot/device/{deviceCode}/announcement/command
+aiot/device/{deviceCode}/announcement/audio/#
+```
+
+命令使用 `aiot-announcement-v1` manifest；音频 Topic 为 `aiot/device/{deviceCode}/announcement/audio/{taskId}/{frameIndex}`，payload 是原始二进制裸 Opus packet，不使用 Base64 或 Ogg。只接受 16 kHz、单声道、60 ms 帧的 Opus；每个任务最多 40 帧，并限制单帧和总接收内存。必须校验协议、`deviceCode`、`taskId`、优先级、ISO 8601 `expiresAt`、帧数、帧序号、声明字节数与 CRC32；ESP-MQTT `MQTT_EVENT_DATA` 的 Topic 和 payload 分段必须按总长度与偏移重组，不能假设一个事件等于一条完整消息。
+
+ACK 使用既有 TLS MQTT 客户端，以 QoS 1、retain=false 发布到：
+
+```text
+aiot/device/{deviceCode}/announcement/ack
+```
+
+ACK 协议同为 `aiot-announcement-v1`，只使用 `received`、`played` 或 `failed`。所有失败均在 `reason` 中给出安全的固定原因，例如 `expired`、`id_conflict`、`too_large`、`queue_full`、`superseded`、`interrupted` 或 `decode_failed`；不记录二进制音频、密码、Token 或私密配置。
+
+任务在 manifest 与全部帧校验完成后才 ACK `received`。RAM 中保留有容量上限与 TTL 的任务终态记录：同 taskId 的 QoS 1 重投返回已知状态且不重复播放；同 taskId、不同 manifest 返回 `failed/id_conflict`。收到任务和开始播放前均检查过期时间，过期返回 `failed/expired`。最多只缓存一条完整待播任务；新任务仅能以更高优先级替换低优先级待播任务，被替换任务返回 `failed/superseded`，其他新任务返回 `failed/queue_full`。
+
+MQTT 回调只负责有界接收、校验和投递，不等待播放或执行耗时解码。新增独立主动播报调度，不把播报硬套进 `Speaking`：因为现有 `HandleStateChangedEvent()` 在 `Speaking` 会调用 `AudioService::ResetDecoder()`。仅在官方状态为 `Idle` 时把已校验的 Opus packet 投入 `AudioService::PushPacketToDecodeQueue()`；`Listening` 或 `Speaking` 时不启动。用户唤醒或主动开始对话会中断播报并 ACK `failed/interrupted`。
+
+`played` 不以队列清空判断。音频层会为主动播报末帧携带完成标记，并只在该帧 PCM 已实际调用扬声器输出后通知应用层发送 `played`。解码、投递或输出失败均返回 `failed`。
+
+计划修改文件：`main/mqtt_log_client.h`、`main/mqtt_log_client.cc`、`main/application.h`、`main/application.cc`、`main/audio/audio_service.h`、`main/audio/audio_service.cc`，以及新增职责单一的 announcement 管理文件；完成后更新本节和 `docs/PROJECT_RECORD_zh.md`。验证顺序为静态检查、`git diff --check`、ESP-IDF v5.5.4 完整构建、固件大小和分区余量检查。真实 MQTT 联调、TTS、部署和烧录均不在本阶段执行。
+
+### 18.1 源码实现与构建记录（未联调）
+
+已新增 `AnnouncementManager`，并修改 `MqttLogClient`、`Application` 与 `AudioService`。远程 TLS MQTT 连接成功后会订阅 command 与 audio Topic；ACK 继续复用同一 MQTT 客户端并以 QoS 1、retain=false 发布。数据接收按 `MQTT_EVENT_DATA` 的总长度与偏移重组并设置上限；任务管理器校验固定音频参数、帧数/长度、CRC32、UTC 过期时间、任务 ID 和 manifest 内容指纹，并在 RAM 中以有界终态记录抑制重复任务或报告 `id_conflict`。
+
+应用层只在 Idle 将完整任务投递至既有 Opus 解码队列；不会进入官方 `Speaking`。用户开始对话、切换聊天或唤醒时会清除当前主动播报并发送 `failed/interrupted`。音频服务为解码 packet 携带完成回调，末帧仅在 `OutputData()` 返回后 ACK `played`；Opus 解码失败回 `failed/decode_failed`。
+
+2026-07-27 已执行 `git diff --check` 和 ESP-IDF v5.5.4 构建。构建通过：`build/xiaozhi.bin` 大小 `0x294720`，最小应用分区 `0x3f0000`，剩余 `0x15b8e0`（34%）；bootloader 大小 `0x3f80`，剩余 `0x4080`（50%）。未部署 TTS、未修改 `D:\AI\IOT`、未进行真实 MQTT 联调、未烧录或部署；因此真实 Broker、协议互操作、音频听感与官方 AI 回归仍待后续明确授权的测试阶段完成。
