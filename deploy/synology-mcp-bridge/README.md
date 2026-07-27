@@ -20,7 +20,7 @@
 ## 部署
 
 1. 将整个目录上传到群晖，例如 `/volume1/docker/xiaozhi-mcp-bridge`。
-2. 若已导入预构建镜像 `synology-mcp-bridge-amd64-0.1.4.tar`，将 `compose.prebuilt.yaml` 改名为 `compose.yaml`。
+2. 若已导入预构建镜像 `synology-mcp-bridge-amd64-0.1.5.tar`，将 `compose.prebuilt.yaml` 改名为 `compose.yaml`。
 3. 在 Container Manager 的“项目”中，以该目录的 `compose.yaml` 创建项目。
 4. 访问 `http://群晖局域网IP:8123`，完成 Home Assistant 初始设置。
 5. 在 Home Assistant 添加 `Model Context Protocol Server` 集成，只向 Assist 暴露需要控制的实体。
@@ -46,6 +46,6 @@
 
 提醒工具经本桥接器调用 IoT 后端 REST API；IoT 后端才负责保存提醒、到时发布 MQTT 和记录设备 ACK。创建工具接收自然时间表达，例如“`两分钟后`”“`明天早上八点`”和“`今晚八点半`”，也接受 ISO-8601 时间。桥接器以群晖 `Asia/Shanghai` 时间换算后再保存；不能安全确定时间的表达会拒绝创建，避免提醒到错误时刻。
 
-语音通常不会包含设备编号。因此在私有 `bridge.env` 设定 `DEFAULT_DEVICE_CODE` 后，用户只需说“`两分钟后提醒我睡觉`”。需要指定其他设备时，官方 AI 仍可传入可选的 `device_code`。幂等 ID 由目标设备、文本和换算后的时间生成，安全重试不会重复创建。
+语音通常不会包含设备编号。因此在私有 `bridge.env` 设定 `DEFAULT_DEVICE_CODE` 后，用户只需说“`两分钟后提醒我睡觉`”。该值会显式传入提醒 MCP 子进程；需要指定其他设备时，官方 AI 仍可传入可选的 `device_code`。幂等 ID 由目标设备、文本和换算后的时间生成，安全重试不会重复创建。
 
 本仓库的桥接器只提供源码与配置样例：未部署群晖 TTS，未替换官方小智 AI，也不会自行发布音频。当前固件/后端阶段只验证固定测试 Opus；动态文本转 Opus、条件提醒和生产部署均须在后续人工核对后单独启用。

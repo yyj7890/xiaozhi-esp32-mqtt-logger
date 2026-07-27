@@ -27,7 +27,7 @@
 - [x] 将远程 MQTT 主动播报固件与桥接器源码整合到 `feature/aiot-mcp-reminder-integration`。
 - [x] 增加 `aiot_create_reminder`、`aiot_list_reminders`、`aiot_cancel_reminder` 工具；桥接器以 IoT REST API 保存和查询提醒，不保存 MQTT 凭据。
 - [x] 提醒创建工具支持自然时间表达（例如“两分钟后”“明天早上八点”），并由私有 `DEFAULT_DEVICE_CODE` 处理未指定设备的语音提醒；模糊且无法安全解析的时间拒绝创建。
-- [x] 构建并导出 `local/xiaozhi-mcp-bridge:0.1.4` 预构建镜像，用于更新自然语言提醒能力；该版本不改变 IoT 后端、固件、Home Assistant 或笔记本代理。
+- [x] 构建并导出 `local/xiaozhi-mcp-bridge:0.1.5` 预构建镜像，用于更新自然语言提醒能力，并将私有 `DEFAULT_DEVICE_CODE` 显式转交给提醒 MCP 子进程；该版本不改变 IoT 后端、固件、Home Assistant 或笔记本代理。
 - [x] 为 Home Assistant 与笔记本 MCP 增加安全操作摘要审计，失败不影响原有工具调用。
 - [x] 已构建并导出 `local/xiaozhi-mcp-bridge:0.1.3`；包为 `D:\AI\XiaoZhi\dist\synology-mcp-bridge-amd64-0.1.3.tar`，SHA-256 为 `1FCAAC363416FF88DAF50DC12C2C1315FB519076ECD55DF44E42C93CD6AA95DF`。包内标签和三个新增脚本已核验，尚未导入或部署到群晖。Dockerfile 默认固定到 Debian bookworm 基础镜像，避免浮动 `python:3.12-slim` 解析到 trixie 后的软件源构建失败；离线/网络受限的本机构建可显式复用已验证的旧桥接器依赖层，再只叠加受管源码。
 

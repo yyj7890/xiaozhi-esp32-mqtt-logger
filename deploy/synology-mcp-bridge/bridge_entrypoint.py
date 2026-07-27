@@ -44,6 +44,15 @@ def wait_for_home_assistant(url: str) -> None:
             time.sleep(5)
 
 
+def tool_environment(iot_url: str) -> dict[str, str]:
+    """Pass only the non-secret settings required by MCP child processes."""
+    environment = {"IOT_API_URL": iot_url}
+    default_device_code = os.environ.get("DEFAULT_DEVICE_CODE", "").strip()
+    if default_device_code:
+        environment["DEFAULT_DEVICE_CODE"] = default_device_code
+    return environment
+
+
 def main() -> None:
     endpoint = validate_url(
         "MCP_ENDPOINT", required_env("MCP_ENDPOINT"), {"ws", "wss"}
@@ -65,13 +74,13 @@ def main() -> None:
             "type": "stdio",
             "command": sys.executable,
             "args": ["/app/audited_mcp_proxy.py", ha_url],
-            "env": {"IOT_API_URL": iot_url},
+            "env": tool_environment(iot_url),
         },
         "aiot-reminders": {
             "type": "stdio",
             "command": sys.executable,
             "args": ["/app/iot_reminder_mcp.py"],
-            "env": {"IOT_API_URL": iot_url},
+            "env": tool_environment(iot_url),
         },
     }
     pc_url = os.environ.get("PC_MCP_URL", "").strip()
@@ -83,7 +92,7 @@ def main() -> None:
                 "/app/audited_mcp_proxy.py",
                 validate_url("PC_MCP_URL", pc_url, {"http", "https"}),
             ],
-            "env": {"IOT_API_URL": iot_url},
+            "env": tool_environment(iot_url),
         }
 
     config = {"mcpServers": servers}
