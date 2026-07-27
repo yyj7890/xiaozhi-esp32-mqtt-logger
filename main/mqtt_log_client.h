@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 class MqttLogClient {
 public:
@@ -76,6 +77,9 @@ private:
     ConnectionAttemptResult EnsureConnected();
     void ResetMqtt();
     bool Publish(const LogRecord& record);
+    void PublishAnnouncementAck(const std::string& task_id, const std::string& status, const std::string& reason);
+    void HandleAnnouncementData(esp_mqtt_event_handle_t event);
+    void ProcessAnnouncementMessage(const std::string& topic, const std::vector<uint8_t>& payload);
     void ScheduleRetry();
     void ScheduleDeferredRetry();
     void RecordConnectionFailure(int64_t now_ms);
@@ -114,6 +118,13 @@ private:
     std::string client_id_;
     std::string report_topic_;
     std::string log_topic_;
+    std::string announcement_command_topic_;
+    std::string announcement_audio_prefix_;
+    std::string announcement_ack_topic_;
+    std::string incoming_topic_;
+    std::vector<uint8_t> incoming_payload_;
+    int incoming_total_len_ = 0;
+    std::mutex incoming_mutex_;
     std::string discovery_token_;
     mutable std::mutex discovered_broker_mutex_;
     std::string last_discovered_broker_host_;

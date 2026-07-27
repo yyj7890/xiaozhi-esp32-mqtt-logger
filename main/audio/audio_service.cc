@@ -307,6 +307,7 @@ void AudioService::AudioOutputTask() {
         }
 
         codec_->OutputData(task->pcm);
+        if (task->on_output_complete) task->on_output_complete(true);
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
@@ -340,12 +341,15 @@ void AudioService::OpusCodecTask() {
         if (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE) {
             auto packet = std::move(audio_decode_queue_.front());
             audio_decode_queue_.pop_front();
+            std::function<void(bool)> completion;
+            if (!audio_decode_completion_queue_.empty()) { completion = std::move(audio_decode_completion_queue_.front()); audio_decode_completion_queue_.pop_front(); }
             audio_queue_cv_.notify_all();
             lock.unlock();
 
             auto task = std::make_unique<AudioTask>();
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
+            task->on_output_complete = std::move(completion);
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             if (opus_decoder_ != nullptr) {
@@ -383,10 +387,12 @@ void AudioService::OpusCodecTask() {
                     debug_statistics_.decode_count++;
                 } else {
                     ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
+                    if (task->on_output_complete) task->on_output_complete(false);
                     lock.lock();
                 }
             } else {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
+                if (task->on_output_complete) task->on_output_complete(false);
                 lock.lock();
             }
             debug_statistics_.decode_count++;
@@ -503,7 +509,7 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
     audio_queue_cv_.notify_all();
 }
 
-bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
+bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait, std::function<void(bool)> on_output_complete) {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
@@ -513,6 +519,7 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
         }
     }
     audio_decode_queue_.push_back(std::move(packet));
+    audio_decode_completion_queue_.push_back(std::move(on_output_complete));
     audio_queue_cv_.notify_all();
     return true;
 }
@@ -674,6 +681,7 @@ void AudioService::ResetDecoder() {
     decoder_lock.unlock();
     timestamp_queue_.clear();
     audio_decode_queue_.clear();
+    audio_decode_completion_queue_.clear();
     audio_playback_queue_.clear();
     audio_testing_queue_.clear();
     audio_queue_cv_.notify_all();

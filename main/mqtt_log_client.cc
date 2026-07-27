@@ -1,4 +1,5 @@
 #include "mqtt_log_client.h"
+#include "announcement_manager.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -168,6 +169,13 @@ void MqttLogClient::Start() {
     client_id_ = BuildClientId();
     report_topic_ = "aiot/device/" + device_code_ + "/report";
     log_topic_ = "aiot/device/" + device_code_ + "/log";
+    announcement_command_topic_ = "aiot/device/" + device_code_ + "/announcement/command";
+    announcement_audio_prefix_ = "aiot/device/" + device_code_ + "/announcement/audio/";
+    announcement_ack_topic_ = "aiot/device/" + device_code_ + "/announcement/ack";
+    AnnouncementManager::GetInstance().SetDeviceCode(device_code_);
+    AnnouncementManager::GetInstance().SetCallbacks(
+        [this](const std::string& id, const std::string& status, const std::string& reason) { PublishAnnouncementAck(id, status, reason); },
+        {});
 #if CONFIG_AIOT_MQTT_LOG_DISCOVERY_ENABLED
     discovery_port_ = CONFIG_AIOT_MQTT_LOG_DISCOVERY_PORT;
     discovery_timeout_ms_ = CONFIG_AIOT_MQTT_LOG_DISCOVERY_TIMEOUT_MS;
@@ -562,7 +570,13 @@ void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32
     }
     if (event_id == MQTT_EVENT_CONNECTED) {
         self->connected_.store(true);
+        if (self->remote_mode_) {
+            esp_mqtt_client_subscribe(event->client, self->announcement_command_topic_.c_str(), 1);
+            esp_mqtt_client_subscribe(event->client, (self->announcement_audio_prefix_ + "#").c_str(), 1);
+        }
         xEventGroupSetBits(self->mqtt_events_, kMqttConnected);
+    } else if (event_id == MQTT_EVENT_DATA && self->remote_mode_) {
+        self->HandleAnnouncementData(event);
     } else if (event_id == MQTT_EVENT_ERROR || event_id == MQTT_EVENT_DISCONNECTED) {
         self->connected_.store(false);
         if (self->mqtt_stop_expected_.load() ||
@@ -609,6 +623,42 @@ bool MqttLogClient::Publish(const LogRecord& record) {
         ESP_LOGW(TAG, "Failed to queue publish to %s", topic.c_str());
     }
     return id > 0;
+}
+
+void MqttLogClient::PublishAnnouncementAck(const std::string& task_id, const std::string& status, const std::string& reason) {
+    if (!mqtt_client_ || !connected_.load()) return;
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "protocol", "aiot-announcement-v1");
+    cJSON_AddStringToObject(root, "taskId", task_id.c_str());
+    cJSON_AddStringToObject(root, "deviceCode", device_code_.c_str());
+    cJSON_AddStringToObject(root, "status", status.c_str());
+    cJSON_AddStringToObject(root, "reason", reason.c_str());
+    cJSON_AddStringToObject(root, "reportedAt", GetReportedAt().c_str());
+    char* json = cJSON_PrintUnformatted(root); cJSON_Delete(root);
+    if (json) { esp_mqtt_client_publish(mqtt_client_, announcement_ack_topic_.c_str(), json, 0, 1, 0); cJSON_free(json); }
+}
+
+void MqttLogClient::HandleAnnouncementData(esp_mqtt_event_handle_t event) {
+    if (!event || event->total_data_len <= 0 || event->total_data_len > static_cast<int>(AnnouncementManager::kMaxTaskBytes + 4096)) return;
+    std::lock_guard<std::mutex> lock(incoming_mutex_);
+    if (event->current_data_offset == 0) {
+        incoming_topic_.assign(event->topic, event->topic_len);
+        incoming_total_len_ = event->total_data_len;
+        incoming_payload_.assign(event->total_data_len, 0);
+    }
+    if (incoming_topic_.empty() || event->total_data_len != incoming_total_len_ || event->current_data_offset < 0 || event->current_data_offset + event->data_len > incoming_total_len_) { incoming_topic_.clear(); incoming_payload_.clear(); return; }
+    std::memcpy(incoming_payload_.data() + event->current_data_offset, event->data, event->data_len);
+    if (event->current_data_offset + event->data_len == incoming_total_len_) { auto topic = incoming_topic_; auto payload = std::move(incoming_payload_); incoming_topic_.clear(); incoming_total_len_ = 0; ProcessAnnouncementMessage(topic, payload); }
+}
+
+void MqttLogClient::ProcessAnnouncementMessage(const std::string& topic, const std::vector<uint8_t>& payload) {
+    if (topic == announcement_command_topic_) { AnnouncementManager::GetInstance().AcceptManifest(reinterpret_cast<const char*>(payload.data()), payload.size()); return; }
+    if (topic.rfind(announcement_audio_prefix_, 0) != 0) return;
+    const std::string suffix = topic.substr(announcement_audio_prefix_.size()); const auto slash = suffix.rfind('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= suffix.size()) return;
+    char* end = nullptr; const long index = std::strtol(suffix.c_str() + slash + 1, &end, 10);
+    if (!end || *end != '\0' || index < 0 || index >= static_cast<long>(AnnouncementManager::kMaxFrames)) return;
+    AnnouncementManager::GetInstance().AcceptFrame(suffix.substr(0, slash), static_cast<int>(index), payload.data(), payload.size());
 }
 
 void MqttLogClient::ScheduleRetry() {

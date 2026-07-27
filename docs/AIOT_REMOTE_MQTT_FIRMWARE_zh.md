@@ -363,7 +363,7 @@ D:\AI\XiaoZhi\firmware-backups\xiaozhi-remote-mqtt-baseline-2026-07-16-v2.2.6-ai
 
 因此，下次生成可发布固件或再次烧录前，必须基于提交 `d891417` 或其后续提交执行一次干净、完整的 ESP-IDF 构建，重新记录固件大小和 SHA-256，再进行真机启动、远程 MQTT、配网页和局域网回归。不得把当前设备中的 `.4` 二进制哈希当作提交 `d891417` 重新构建产物的哈希。
 
-## 18. 已确认方案：语音创建提醒与 MQTT 主动播报（仅规划，未实施）
+## 18. 语音创建提醒与 MQTT 主动播报（固定 Opus 验证已完成）
 
 ### 目标
 
@@ -389,22 +389,57 @@ Home Assistant 只作为设备控制/状态来源之一；提醒的创建、排�
 ### 现有基础与边界
 
 - 已有远程 MQTT 通道保持为：小智设备 <-> HiveMQ Cloud <-> IoT 后端，且不替换官方 AI、官方 OTA 或现有语音对话。
-- 当前 `MqttLogClient` 只发布 `/report` 与 `/log`，没有订阅下行 Topic，也没有处理播报任务；现有烧录固件不能主动播报。
-- 小智硬件/源码已具备扬声器、Opus 解码和音频播放队列，可在新增下行 MQTT 与播报调度逻辑后复用该播放能力。
+- `MqttLogClient` 已保留原有 `/report` 与 `/log` 上报，并新增设备专属 announcement 下行订阅和 ACK；原有上报处理未替换。
+- 小智硬件/源码复用既有扬声器、Opus 解码和音频播放队列；主动播报只在官方状态为 `Idle` 时开始，默认不打断官方对话。
 - 官方公开 MCP/语音接入未确认提供“外部文字直接触发指定设备主动原声播报”的接口。因此主动提醒使用自建 TTS 音频，音色不会保证与官方对话 TTS 完全一致。
 
-### 计划实施项
+### 已完成范围
 
-1. 在 IoT 后端新增提醒 MCP：创建、查询、取消一次性提醒，以及创建/取消条件提醒。
-2. 在 IoT 后端新增提醒持久化、排程、条件判断、静音时段、去重/冷却和播报历史。
-3. 在群晖部署最小化中文 TTS 服务，输出小智可播放的 Opus 音频；不部署完整本地小智语音后端。
-4. 扩展既有远程 MQTT 协议，新增每台设备独立的下行 `announcement` Topic、任务 ID、优先级、过期时间、分片音频和完成状态回执。
-5. 扩展 `MqttLogClient`：连接后订阅播报 Topic，校验任务、接收音频、在设备空闲时播放，并将 `received`、`played` 或 `failed` 状态回传 IoT 后端。默认不打断正在进行的官方语音对话。
-6. 先只验证固定测试语音的主动播放；验证通过后才接入语音创建的一次性提醒、温湿度/日志条件提醒和天气提醒。
+1. IoT 后端已有固定测试 Opus 发布、ACK 时间线、一次性提醒持久化和排程；真实 HiveMQ 固定语音已验证 `received -> played`。
+2. 固件新增 `AnnouncementManager`，订阅 `aiot/device/{deviceCode}/announcement/command` 与 `.../audio/#`，并向 `.../ack` 发布 QoS 1、`retain=false` 的 `received`、`played`、`failed` 回执。
+3. 音频是 16 kHz、单声道、60 ms 的裸 Opus packet；不使用 Ogg/Base64。manifest 使用 `aiot-announcement-v1`，逐帧校验 index、bytes 与 CRC32。
+4. MQTT 分段数据按总长度和偏移重组；任务 ID、过期时间、内容指纹、容量与优先级均受限，QoS 1 重投安全去重，冲突、过期、队列满和中断均返回安全失败原因。
+
+### 尚未实施范围
+
+1. 未部署群晖中文 TTS；当前提醒仍使用固定、合法的测试 Opus 资源，不能据此视为动态文本播报已经完成。
+2. 温湿度、设备日志和天气条件提醒、静音时段和冷却策略仍待后续实现。
+3. 提醒 MCP、Home Assistant/电脑 MCP 操作审计已在受管桥接器整合分支中实现，尚未部署到群晖或接入官方 MCP 生产连接。
 
 ### 安全与发布约束
 
 - 下行 Topic 必须使用现有 TLS MQTT 连接和 Broker ACL；设备只能订阅自己的 Topic。
 - 播报任务必须带唯一 ID 和过期时间；后端必须记录已播报 ID，防止 QoS 1 重投造成重复播报。
-- 新固件必须经过完整构建、固定语音测试、远程网络/手机热点恢复测试、官方 AI 对话回归测试后，才可在用户明确授权下烧录。
-- 本节只记录方案，不代表已部署 TTS、已修改固件或已启用主动播报。
+- 新固件在后续发布或再次烧录前，仍必须基于当前源码完成干净、完整构建，并进行远程网络/手机热点恢复和官方 AI 对话回归。
+- 本节不代表已部署 TTS 或群晖服务；真实 MQTT 固定语音互操作已验证，但任何后续部署、烧录或生产启用都须用户明确授权。
+
+### 18.1 固定 Opus 协议与实现记录
+
+复用既有远程 HiveMQ TLS 连接。连接成功后订阅本机专属 Topic：
+
+```text
+aiot/device/{deviceCode}/announcement/command
+aiot/device/{deviceCode}/announcement/audio/#
+```
+
+命令使用 `aiot-announcement-v1` manifest；音频 Topic 为 `aiot/device/{deviceCode}/announcement/audio/{taskId}/{frameIndex}`，payload 是原始二进制裸 Opus packet，不使用 Base64 或 Ogg。只接受 16 kHz、单声道、60 ms 帧的 Opus；每个任务最多 40 帧，并限制单帧和总接收内存。必须校验协议、`deviceCode`、`taskId`、优先级、ISO 8601 `expiresAt`、帧数、帧序号、声明字节数与 CRC32；ESP-MQTT `MQTT_EVENT_DATA` 的 Topic 和 payload 分段必须按总长度与偏移重组，不能假设一个事件等于一条完整消息。
+
+ACK 使用既有 TLS MQTT 客户端，以 QoS 1、retain=false 发布到：
+
+```text
+aiot/device/{deviceCode}/announcement/ack
+```
+
+ACK 协议同为 `aiot-announcement-v1`，只使用 `received`、`played` 或 `failed`。所有失败均在 `reason` 中给出安全的固定原因，例如 `expired`、`id_conflict`、`too_large`、`queue_full`、`superseded`、`interrupted` 或 `decode_failed`；不记录二进制音频、密码、Token 或私密配置。
+
+任务在 manifest 与全部帧校验完成后才 ACK `received`。RAM 中保留有容量上限与 TTL 的任务终态记录：同 taskId 的 QoS 1 重投返回已知状态且不重复播放；同 taskId、不同 manifest 返回 `failed/id_conflict`。收到任务和开始播放前均检查过期时间，过期返回 `failed/expired`。最多只缓存一条完整待播任务；新任务仅能以更高优先级替换低优先级待播任务，被替换任务返回 `failed/superseded`，其他新任务返回 `failed/queue_full`。
+
+MQTT 回调只负责有界接收、校验和投递，不等待播放或执行耗时解码。新增独立主动播报调度，不把播报硬套进 `Speaking`：因为现有 `HandleStateChangedEvent()` 在 `Speaking` 会调用 `AudioService::ResetDecoder()`。仅在官方状态为 `Idle` 时把已校验的 Opus packet 投入 `AudioService::PushPacketToDecodeQueue()`；`Listening` 或 `Speaking` 时不启动。用户唤醒或主动开始对话会中断播报并 ACK `failed/interrupted`。
+
+`played` 不以队列清空判断。音频层会为主动播报末帧携带完成标记，并只在该帧 PCM 已实际调用扬声器输出后通知应用层发送 `played`。解码、投递或输出失败均返回 `failed`。
+
+已新增 `AnnouncementManager`，并修改 `MqttLogClient`、`Application` 与 `AudioService`。远程 TLS MQTT 连接成功后会订阅 command 与 audio Topic；ACK 继续复用同一 MQTT 客户端并以 QoS 1、retain=false 发布。数据接收按 `MQTT_EVENT_DATA` 的总长度与偏移重组并设置上限；任务管理器校验固定音频参数、帧数/长度、CRC32、UTC 过期时间、任务 ID 和 manifest 内容指纹，并在 RAM 中以有界终态记录抑制重复任务或报告 `id_conflict`。
+
+应用层只在 Idle 将完整任务投递至既有 Opus 解码队列；不会进入官方 `Speaking`。用户开始对话、切换聊天或唤醒时会清除当前主动播报并发送 `failed/interrupted`。音频服务为解码 packet 携带完成回调，末帧仅在 `OutputData()` 返回后 ACK `played`；Opus 解码失败回 `failed/decode_failed`。
+
+2026-07-27 已执行 `git diff --check` 和 ESP-IDF v5.5.4 构建。构建通过：`build/xiaozhi.bin` 大小 `0x294720`，最小应用分区 `0x3f0000`，剩余 `0x15b8e0`（34%）；bootloader 大小 `0x3f80`，剩余 `0x4080`（50%）。之后固定测试语音已完成真实 HiveMQ 互操作及设备播放回执验证；未部署 TTS，动态文本的音频生成与生产环境回归仍待后续明确授权。
