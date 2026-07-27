@@ -443,3 +443,9 @@ MQTT 回调只负责有界接收、校验和投递，不等待播放或执行耗
 应用层只在 Idle 将完整任务投递至既有 Opus 解码队列；不会进入官方 `Speaking`。用户开始对话、切换聊天或唤醒时会清除当前主动播报并发送 `failed/interrupted`。音频服务为解码 packet 携带完成回调，末帧仅在 `OutputData()` 返回后 ACK `played`；Opus 解码失败回 `failed/decode_failed`。
 
 2026-07-27 已执行 `git diff --check` 和 ESP-IDF v5.5.4 构建。构建通过：`build/xiaozhi.bin` 大小 `0x294720`，最小应用分区 `0x3f0000`，剩余 `0x15b8e0`（34%）；bootloader 大小 `0x3f80`，剩余 `0x4080`（50%）。之后固定测试语音已完成真实 HiveMQ 互操作及设备播放回执验证；未部署 TTS，动态文本的音频生成与生产环境回归仍待后续明确授权。
+
+### 18.2 官方 MCP 的自然语言提醒适配
+
+官方小智语音不会可靠地附带设备编号，也不应要求用户先把“两个小时后”换算成绝对时间。因此群晖桥接器的 `aiot_create_reminder` 工具将 `message` 与 `time_expression` 作为主要参数，`device_code` 改为可选。未指定设备时，桥接器只从私有 `bridge.env` 的 `DEFAULT_DEVICE_CODE` 读取默认目标；真实设备编号不进入源码、镜像或文档。
+
+桥接器以 `Asia/Shanghai` 当前时间解析 `两分钟后`、`一小时后`、`两天后`、`今天/明天/后天` 的早中晚具体时刻，以及 ISO-8601 时间。无法安全确定的词语（例如“过一会儿”）必须拒绝创建而非猜测。解析后的设备、文本与准确时间继续生成稳定幂等 ID，保持 IoT 后端的重试去重语义。此改动只更新群晖 MCP 桥接器；IoT 容器、小智固件、HiveMQ Topic 和固定 Opus 播报协议均不改变。
