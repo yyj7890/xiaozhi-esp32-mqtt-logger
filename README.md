@@ -4,6 +4,17 @@
 
 > 这是个人维护的固件仓库，不是小智官方发布渠道。仓库仅包含固件，不包含后端服务端代码、模型文件或任何私有配置。
 
+## 项目组成与 GitHub 分支
+
+本项目把“设备固件”和“群晖桥接器”分开维护，避免将 NAS 配置、令牌或设备数据混入固件源码。
+
+| 组件 | GitHub 分支 | 当前内容与状态 |
+| --- | --- | --- |
+| ESP32 固件 | [`feature/aiot-remote-mqtt-firmware`](https://github.com/yyj7890/xiaozhi-esp32-mqtt-logger/tree/feature/aiot-remote-mqtt-firmware) | 独立 AIoT MQTT 日志、局域网发现，以及主动播报的 MQTT/Opus 接收与空闲播放源码。主动播报已完成源码与构建验证，尚未进行真实 MQTT 联调或烧录。 |
+| 群晖 MCP 桥接器 | [`feature/synology-mcp-bridge`](https://github.com/yyj7890/xiaozhi-esp32-mqtt-logger/tree/feature/synology-mcp-bridge/deploy/synology-mcp-bridge) | DS920+ 上连接官方小智 MCP、Home Assistant、提醒工具和笔记本白名单 MCP；桥接器当前版本为 `0.1.6`，已修复提醒默认目标设备选择。 |
+
+两者通过既有 MQTT/官方小智通道协作，但不是同一个程序：固件不包含群晖 Token、Home Assistant 配置或桥接器源码；桥接器也不修改固件、IoT 后端、MQTT 协议或 Home Assistant。
+
 ## 本仓库改动
 
 ### 独立 MQTT 状态与事件日志
@@ -29,6 +40,14 @@ Wi-Fi 连接后，固件可向局域网 UDP 端口 `19830` 发送 `aiot-mqtt-dis
 固件还可在启动时通过 UDP `19831` 寻找兼容的本地 `xiaozhi-esp32-server`。本地服务端可用时优先使用；未发现、OTA 请求失败或 WebSocket 握手失败时，固件会回退到原有官方 OTA/AI 服务。
 
 > 此能力需要局域网内运行兼容的服务端。本仓库不发布服务端源码；本机部署记录见 [docs/LOCAL_SERVER.md](docs/LOCAL_SERVER.md)。
+
+### MQTT 主动播报（源码已实现，未联调）
+
+固件可在既有远程 TLS MQTT 连接上接收经校验的固定 Opus 提醒音频；只在设备 `Idle` 时播放，并以 QoS 1 发布 `received`、`played` 或 `failed` ACK。它不会替代或修改官方 AI 对话链路，也不会把主动播报硬套进官方 `Speaking` 状态。
+
+- 源码、静态检查和 ESP-IDF v5.5.4 构建已完成；
+- 尚未部署 TTS、尚未修改 IoT 后端、尚未真实 MQTT 联调或烧录；
+- 详细协议、限制和验证状态见 [AIoT 远程 MQTT 固件记录](docs/AIOT_REMOTE_MQTT_FIRMWARE_zh.md)。
 
 ## 与上游官方项目的关系
 
@@ -103,6 +122,9 @@ aiot/device/{deviceCode}/log
 
 ## 文档
 
+- [AIoT 远程 MQTT 固件记录](docs/AIOT_REMOTE_MQTT_FIRMWARE_zh.md)：日志与主动播报源码、协议、构建和联调状态。
+- [群晖 MCP 桥接器分支](https://github.com/yyj7890/xiaozhi-esp32-mqtt-logger/tree/feature/synology-mcp-bridge/deploy/synology-mcp-bridge)：群晖部署、Home Assistant、提醒默认目标和笔记本 MCP 说明。
+- [笔记本 MCP 部署记录](docs/LAPTOP_MCP_DEPLOYMENT_RECORD_zh.md)：白名单应用、固定游戏启动任务与安全边界。
 - [本地服务端部署记录](docs/LOCAL_SERVER.md)：只记录本机运行服务端的方法，不含服务端源码与密钥。
 - [发布前检查清单](docs/PUBLISHING.md)：许可证、敏感信息与发布步骤。
 - [上游中文说明](README_zh.md)：小智官方固件功能、硬件和开发资料。

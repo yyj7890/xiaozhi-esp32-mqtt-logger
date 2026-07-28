@@ -363,9 +363,9 @@ D:\AI\XiaoZhi\firmware-backups\xiaozhi-remote-mqtt-baseline-2026-07-16-v2.2.6-ai
 
 因此，下次生成可发布固件或再次烧录前，必须基于提交 `d891417` 或其后续提交执行一次干净、完整的 ESP-IDF 构建，重新记录固件大小和 SHA-256，再进行真机启动、远程 MQTT、配网页和局域网回归。不得把当前设备中的 `.4` 二进制哈希当作提交 `d891417` 重新构建产物的哈希。
 
-## 18. 主动播报第一阶段：固定测试 Opus 语音（计划，尚未实施）
+## 18. 主动播报第一阶段：固定测试 Opus 语音（源码已实现，未联调）
 
-本阶段仅在固件中实现固定测试 Opus 语音的安全接收、空闲播放与 MQTT ACK；不部署 TTS、不修改 `D:\AI\IOT` 后端、不烧录设备，也不做真实 MQTT 联调。官方 AI、官方 OTA、官方 WebSocket/MQTT 对话、既有 MCP、Home Assistant 与既有 `/report`、`/log` 上报必须保持不变。
+本阶段已在固件中实现固定测试 Opus 语音的安全接收、空闲播放与 MQTT ACK，并完成静态检查与 ESP-IDF 构建；尚未部署 TTS、不修改 `D:\AI\IOT` 后端、不烧录设备，也未做真实 MQTT 联调。官方 AI、官方 OTA、官方 WebSocket/MQTT 对话、既有 MCP、Home Assistant 与既有 `/report`、`/log` 上报保持不变。
 
 复用既有远程 HiveMQ TLS 连接。连接成功后订阅本机专属 Topic：
 
@@ -390,7 +390,7 @@ MQTT 回调只负责有界接收、校验和投递，不等待播放或执行耗
 
 `played` 不以队列清空判断。音频层会为主动播报末帧携带完成标记，并只在该帧 PCM 已实际调用扬声器输出后通知应用层发送 `played`。解码、投递或输出失败均返回 `failed`。
 
-计划修改文件：`main/mqtt_log_client.h`、`main/mqtt_log_client.cc`、`main/application.h`、`main/application.cc`、`main/audio/audio_service.h`、`main/audio/audio_service.cc`，以及新增职责单一的 announcement 管理文件；完成后更新本节和 `docs/PROJECT_RECORD_zh.md`。验证顺序为静态检查、`git diff --check`、ESP-IDF v5.5.4 完整构建、固件大小和分区余量检查。真实 MQTT 联调、TTS、部署和烧录均不在本阶段执行。
+已修改文件包括：`main/mqtt_log_client.h`、`main/mqtt_log_client.cc`、`main/application.h`、`main/application.cc`、`main/audio/audio_service.h`、`main/audio/audio_service.cc`，以及职责单一的 announcement 管理文件。已完成静态检查、`git diff --check`、ESP-IDF v5.5.4 完整构建、固件大小和分区余量检查；真实 MQTT 联调、TTS、部署和烧录仍不在本阶段执行。
 
 ### 18.1 源码实现与构建记录（未联调）
 
