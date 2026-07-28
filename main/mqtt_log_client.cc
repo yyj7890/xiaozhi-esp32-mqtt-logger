@@ -2,6 +2,8 @@
 #include "announcement_manager.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -571,10 +573,24 @@ void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32
     if (event_id == MQTT_EVENT_CONNECTED) {
         self->connected_.store(true);
         if (self->remote_mode_) {
-            esp_mqtt_client_subscribe(event->client, self->announcement_command_topic_.c_str(), 1);
-            esp_mqtt_client_subscribe(event->client, (self->announcement_audio_prefix_ + "#").c_str(), 1);
+            self->announcement_command_subscribe_id_ = esp_mqtt_client_subscribe(
+                event->client, self->announcement_command_topic_.c_str(), 1);
+            self->announcement_audio_subscribe_id_ = esp_mqtt_client_subscribe(
+                event->client, (self->announcement_audio_prefix_ + "#").c_str(), 1);
+            ESP_LOGI(TAG, "Announcement command subscription requested (id=%d)",
+                self->announcement_command_subscribe_id_);
+            ESP_LOGI(TAG, "Announcement audio subscription requested (id=%d)",
+                self->announcement_audio_subscribe_id_);
         }
         xEventGroupSetBits(self->mqtt_events_, kMqttConnected);
+    } else if (event_id == MQTT_EVENT_SUBSCRIBED && self->remote_mode_) {
+        if (event->msg_id == self->announcement_command_subscribe_id_) {
+            ESP_LOGI(TAG, "Announcement command subscription confirmed");
+        } else if (event->msg_id == self->announcement_audio_subscribe_id_) {
+            ESP_LOGI(TAG, "Announcement audio subscription confirmed");
+        } else {
+            ESP_LOGW(TAG, "Unexpected MQTT subscription confirmation (id=%d)", event->msg_id);
+        }
     } else if (event_id == MQTT_EVENT_DATA && self->remote_mode_) {
         self->HandleAnnouncementData(event);
     } else if (event_id == MQTT_EVENT_ERROR || event_id == MQTT_EVENT_DISCONNECTED) {
@@ -626,7 +642,10 @@ bool MqttLogClient::Publish(const LogRecord& record) {
 }
 
 void MqttLogClient::PublishAnnouncementAck(const std::string& task_id, const std::string& status, const std::string& reason) {
-    if (!mqtt_client_ || !connected_.load()) return;
+    if (!mqtt_client_ || !connected_.load()) {
+        ESP_LOGW(TAG, "Announcement ACK not queued (status=%s)", status.c_str());
+        return;
+    }
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "protocol", "aiot-announcement-v1");
     cJSON_AddStringToObject(root, "taskId", task_id.c_str());
@@ -635,30 +654,84 @@ void MqttLogClient::PublishAnnouncementAck(const std::string& task_id, const std
     cJSON_AddStringToObject(root, "reason", reason.c_str());
     cJSON_AddStringToObject(root, "reportedAt", GetReportedAt().c_str());
     char* json = cJSON_PrintUnformatted(root); cJSON_Delete(root);
-    if (json) { esp_mqtt_client_publish(mqtt_client_, announcement_ack_topic_.c_str(), json, 0, 1, 0); cJSON_free(json); }
+    if (!json) {
+        ESP_LOGW(TAG, "Announcement ACK not queued (status=%s)", status.c_str());
+        return;
+    }
+    const int message_id = esp_mqtt_client_publish(mqtt_client_, announcement_ack_topic_.c_str(), json, 0, 1, 0);
+    cJSON_free(json);
+    if (message_id > 0) {
+        ESP_LOGI(TAG, "Announcement ACK queued (status=%s)", status.c_str());
+    } else {
+        ESP_LOGW(TAG, "Announcement ACK not queued (status=%s)", status.c_str());
+    }
 }
 
 void MqttLogClient::HandleAnnouncementData(esp_mqtt_event_handle_t event) {
-    if (!event || event->total_data_len <= 0 || event->total_data_len > static_cast<int>(AnnouncementManager::kMaxTaskBytes + 4096)) return;
+    if (!event || event->total_data_len <= 0 || event->data_len < 0 ||
+        event->total_data_len > static_cast<int>(AnnouncementManager::kMaxTaskBytes + 4096)) {
+        ESP_LOGW(TAG, "Announcement MQTT data rejected (invalid length)");
+        return;
+    }
     std::lock_guard<std::mutex> lock(incoming_mutex_);
     if (event->current_data_offset == 0) {
+        if (!event->topic || event->topic_len <= 0 || !event->data) {
+            ESP_LOGW(TAG, "Announcement MQTT data rejected (missing first fragment metadata)");
+            return;
+        }
         incoming_topic_.assign(event->topic, event->topic_len);
         incoming_total_len_ = event->total_data_len;
         incoming_payload_.assign(event->total_data_len, 0);
     }
-    if (incoming_topic_.empty() || event->total_data_len != incoming_total_len_ || event->current_data_offset < 0 || event->current_data_offset + event->data_len > incoming_total_len_) { incoming_topic_.clear(); incoming_payload_.clear(); return; }
-    std::memcpy(incoming_payload_.data() + event->current_data_offset, event->data, event->data_len);
+    if (incoming_topic_.empty() || event->total_data_len != incoming_total_len_ ||
+        event->current_data_offset < 0 || event->data_len > incoming_total_len_ - event->current_data_offset ||
+        (event->data_len > 0 && !event->data)) {
+        incoming_topic_.clear(); incoming_payload_.clear(); incoming_total_len_ = 0;
+        ESP_LOGW(TAG, "Announcement MQTT data rejected (invalid fragment)");
+        return;
+    }
+    if (event->data_len > 0) {
+        std::memcpy(incoming_payload_.data() + event->current_data_offset, event->data, event->data_len);
+    }
     if (event->current_data_offset + event->data_len == incoming_total_len_) { auto topic = incoming_topic_; auto payload = std::move(incoming_payload_); incoming_topic_.clear(); incoming_total_len_ = 0; ProcessAnnouncementMessage(topic, payload); }
 }
 
 void MqttLogClient::ProcessAnnouncementMessage(const std::string& topic, const std::vector<uint8_t>& payload) {
-    if (topic == announcement_command_topic_) { AnnouncementManager::GetInstance().AcceptManifest(reinterpret_cast<const char*>(payload.data()), payload.size()); return; }
+    if (topic == announcement_command_topic_) {
+        const auto result = AnnouncementManager::GetInstance().AcceptManifest(
+            reinterpret_cast<const char*>(payload.data()), payload.size());
+        if (result == AnnouncementManager::ManifestResult::kAccepted) {
+            ESP_LOGI(TAG, "Announcement command accepted (bytes=%u)", static_cast<unsigned>(payload.size()));
+        } else if (result == AnnouncementManager::ManifestResult::kDuplicate) {
+            ESP_LOGI(TAG, "Announcement command handled (result=duplicate)");
+        } else {
+            ESP_LOGW(TAG, "Announcement command rejected. reason=%s",
+                AnnouncementManager::ManifestResultReason(result));
+        }
+        return;
+    }
     if (topic.rfind(announcement_audio_prefix_, 0) != 0) return;
     const std::string suffix = topic.substr(announcement_audio_prefix_.size()); const auto slash = suffix.rfind('/');
-    if (slash == std::string::npos || slash == 0 || slash + 1 >= suffix.size()) return;
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= suffix.size() || slash > 64) {
+        ESP_LOGW(TAG, "Announcement audio frame rejected (invalid topic)");
+        return;
+    }
+    const std::string task_id = suffix.substr(0, slash);
+    if (!std::all_of(task_id.begin(), task_id.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '-' || c == '_' || c == '.';
+        })) {
+        ESP_LOGW(TAG, "Announcement audio frame rejected (invalid task id)");
+        return;
+    }
+    errno = 0;
     char* end = nullptr; const long index = std::strtol(suffix.c_str() + slash + 1, &end, 10);
-    if (!end || *end != '\0' || index < 0 || index >= static_cast<long>(AnnouncementManager::kMaxFrames)) return;
-    AnnouncementManager::GetInstance().AcceptFrame(suffix.substr(0, slash), static_cast<int>(index), payload.data(), payload.size());
+    if (errno == ERANGE || !end || *end != '\0' || index < 0 || index >= static_cast<long>(AnnouncementManager::kMaxFrames)) {
+        ESP_LOGW(TAG, "Announcement audio frame rejected (invalid index)");
+        return;
+    }
+    const bool handled = AnnouncementManager::GetInstance().AcceptFrame(task_id, static_cast<int>(index), payload.data(), payload.size());
+    ESP_LOGI(TAG, "Announcement audio frame received (bytes=%u index=%ld result=%s)",
+        static_cast<unsigned>(payload.size()), index, handled ? "handled" : "rejected");
 }
 
 void MqttLogClient::ScheduleRetry() {

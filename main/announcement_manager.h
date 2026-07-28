@@ -28,12 +28,26 @@ public:
         std::vector<Packet> packets;
     };
 
+    // Safe, protocol-level outcomes for a manifest command. These values are
+    // suitable for diagnostics and ACK reasons; they never expose payload data.
+    enum class ManifestResult {
+        kAccepted,
+        kDuplicate,
+        kExpired,
+        kInvalidManifest,
+        kTooLarge,
+        kIdConflict,
+        kQueueFull,
+    };
+
     using AckCallback = std::function<void(const std::string&, const std::string&, const std::string&)>;
     using ReadyCallback = std::function<void()>;
     void SetCallbacks(AckCallback ack, ReadyCallback ready);
     void SetDeviceCode(const std::string& device_code);
-    // The manifest must be complete JSON. Returns false only for malformed input.
-    bool AcceptManifest(const char* json, size_t size);
+    // The manifest must be complete JSON. A malformed payload is reported as
+    // kInvalidManifest; ACK is sent only when a safe task identifier exists.
+    ManifestResult AcceptManifest(const char* json, size_t size);
+    static const char* ManifestResultReason(ManifestResult result);
     // frame_index is derived from the strictly validated MQTT topic.
     bool AcceptFrame(const std::string& task_id, int frame_index, const uint8_t* data, size_t size);
     bool TakePending(Task* task);

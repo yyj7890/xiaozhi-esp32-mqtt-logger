@@ -1044,6 +1044,9 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            // A valid task received while the user was talking remains pending.
+            // Re-check it only after the official state has returned to Idle.
+            StartAnnouncementIfIdle();
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);

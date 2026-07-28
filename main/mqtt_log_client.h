@@ -121,6 +121,11 @@ private:
     std::string announcement_command_topic_;
     std::string announcement_audio_prefix_;
     std::string announcement_ack_topic_;
+    // Message IDs are intentionally retained only for diagnosing the two
+    // announcement subscriptions; topic strings and credentials are never
+    // written to logs.
+    int announcement_command_subscribe_id_ = -1;
+    int announcement_audio_subscribe_id_ = -1;
     std::string incoming_topic_;
     std::vector<uint8_t> incoming_payload_;
     int incoming_total_len_ = 0;

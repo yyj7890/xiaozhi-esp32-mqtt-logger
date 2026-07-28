@@ -363,7 +363,7 @@ D:\AI\XiaoZhi\firmware-backups\xiaozhi-remote-mqtt-baseline-2026-07-16-v2.2.6-ai
 
 因此，下次生成可发布固件或再次烧录前，必须基于提交 `d891417` 或其后续提交执行一次干净、完整的 ESP-IDF 构建，重新记录固件大小和 SHA-256，再进行真机启动、远程 MQTT、配网页和局域网回归。不得把当前设备中的 `.4` 二进制哈希当作提交 `d891417` 重新构建产物的哈希。
 
-## 18. 语音创建提醒与 MQTT 主动播报（固定 Opus 验证已完成）
+## 18. 语音创建提醒与 MQTT 主动播报（固定 Opus，待重新验证）
 
 ### 目标
 
@@ -395,7 +395,7 @@ Home Assistant 只作为设备控制/状态来源之一；提醒的创建、排�
 
 ### 已完成范围
 
-1. IoT 后端已有固定测试 Opus 发布、ACK 时间线、一次性提醒持久化和排程；真实 HiveMQ 固定语音已验证 `received -> played`。
+1. 固件实现固定测试 Opus 的 manifest、分帧接收、ACK 与播放调度；这不是动态 TTS，真实 HiveMQ 下行订阅和播放仍须以本节的诊断步骤重新验证。
 2. 固件新增 `AnnouncementManager`，订阅 `aiot/device/{deviceCode}/announcement/command` 与 `.../audio/#`，并向 `.../ack` 发布 QoS 1、`retain=false` 的 `received`、`played`、`failed` 回执。
 3. 音频是 16 kHz、单声道、60 ms 的裸 Opus packet；不使用 Ogg/Base64。manifest 使用 `aiot-announcement-v1`，逐帧校验 index、bytes 与 CRC32。
 4. MQTT 分段数据按总长度和偏移重组；任务 ID、过期时间、内容指纹、容量与优先级均受限，QoS 1 重投安全去重，冲突、过期、队列满和中断均返回安全失败原因。
@@ -424,6 +424,8 @@ aiot/device/{deviceCode}/announcement/audio/#
 
 命令使用 `aiot-announcement-v1` manifest；音频 Topic 为 `aiot/device/{deviceCode}/announcement/audio/{taskId}/{frameIndex}`，payload 是原始二进制裸 Opus packet，不使用 Base64 或 Ogg。只接受 16 kHz、单声道、60 ms 帧的 Opus；每个任务最多 40 帧，并限制单帧和总接收内存。必须校验协议、`deviceCode`、`taskId`、优先级、ISO 8601 `expiresAt`、帧数、帧序号、声明字节数与 CRC32；ESP-MQTT `MQTT_EVENT_DATA` 的 Topic 和 payload 分段必须按总长度与偏移重组，不能假设一个事件等于一条完整消息。
 
+为避免 Topic 歧义，`taskId` 仅接受 1–64 个 ASCII 字母、数字、`-`、`_` 或 `.`；固定测试任务使用该兼容子集。
+
 ACK 使用既有 TLS MQTT 客户端，以 QoS 1、retain=false 发布到：
 
 ```text
@@ -442,7 +444,29 @@ MQTT 回调只负责有界接收、校验和投递，不等待播放或执行耗
 
 应用层只在 Idle 将完整任务投递至既有 Opus 解码队列；不会进入官方 `Speaking`。用户开始对话、切换聊天或唤醒时会清除当前主动播报并发送 `failed/interrupted`。音频服务为解码 packet 携带完成回调，末帧仅在 `OutputData()` 返回后 ACK `played`；Opus 解码失败回 `failed/decode_failed`。
 
-2026-07-27 已执行 `git diff --check` 和 ESP-IDF v5.5.4 构建。构建通过：`build/xiaozhi.bin` 大小 `0x294720`，最小应用分区 `0x3f0000`，剩余 `0x15b8e0`（34%）；bootloader 大小 `0x3f80`，剩余 `0x4080`（50%）。之后固定测试语音已完成真实 HiveMQ 互操作及设备播放回执验证；未部署 TTS，动态文本的音频生成与生产环境回归仍待后续明确授权。
+此前已执行过 `git diff --check` 和 ESP-IDF v5.5.4 构建；该历史构建结果不能代替本次排障后的重新构建与设备验证。未部署 TTS；动态文本的音频生成、真实 MQTT 互操作、烧录及生产回归均待用户明确授权。
+
+### 18.3 2026-07-28 下行订阅排障记录
+
+真实联调中，设备可以通过既有远程 TLS MQTT 连接上报启动日志，但 MQTTX 向 announcement command Topic 发布故意无效的 manifest 后，未看到预期的 `failed/invalid_manifest` ACK。这只能说明上行连接可用，不能证明 announcement 下行订阅、Broker ACL、MQTT 数据事件和 ACK 发布链路可用。
+
+本次固件修复与诊断仅在 `remote_mode=true` 时生效：
+
+- 保存 command 和 audio/# 两次订阅调用返回的 message ID，并在 `MQTT_EVENT_SUBSCRIBED` 中分别记录 Broker 确认；不会打印实际 Topic、设备编号、主机、账号或凭证。
+- `MQTT_EVENT_DATA` 仅记录 command 或 audio frame 的长度、音频帧索引和处理结果；不记录 JSON 原文、taskId、二进制音频或私密配置。分段重组增加首段元数据、空数据和边界检查。
+- ACK 日志只记录 `received`、`played` 或 `failed` 是否成功进入 MQTT 发布队列，不记录 taskId、reason、Topic 或 payload。
+- 可安全取得 taskId 与 deviceCode 的 manifest 即使在协议、时间或其他基础字段校验失败时，也会回 `failed/invalid_manifest`；完全无法安全解析的 JSON 不会伪造 ACK。
+- manifest 的 UTC `expiresAt` 同时接受整秒 `...SSZ` 和 IoT v1.2.2 使用的小数秒 `...SS.sssZ`；非零小数秒按秒级时钟向上取整，避免任务在声明到期点之前被误判为过期。
+- command 处理使用明确的安全结果类型；拒绝时仅记录 `Announcement command rejected. reason=<reason>`。可见 reason 仅限 `expired`、`invalid_manifest`、`too_large`、`id_conflict` 或 `queue_full`，不会输出原始 payload 或私密标识。
+- 设备在 Listening 或 Speaking 时收齐的有效任务会保留为一条待播任务；官方状态回到 Idle 后再次调度，仍不打断官方 AI 对话。
+
+重新构建并经用户明确授权烧录后，使用 MQTTX 按以下顺序验证：
+
+1. 重启设备，串口应依次出现两条 subscription requested 日志及两条 subscription confirmed 日志；若没有 confirmed，应检查 Broker ACL 或订阅请求，而不是提醒排程。
+2. 向 command Topic 发布包含安全 taskId/deviceCode、但协议或音频字段故意无效的 JSON；应看到 `Announcement command rejected. reason=invalid_manifest` 和 ACK queued（`status=failed`），同时在 ACK Topic 收到 `failed/invalid_manifest`。
+3. 再发布一个未过期、带 `Z` 或 `.sssZ` UTC 时间的完整固定 Opus manifest 和全部 frame；应看到 `Announcement command accepted`、audio 接收日志、`received` ACK，以及设备 Idle 时的 `played` ACK。若设备正处于对话中，结束对话回到 Idle 后才开始播放。
+
+本次仅修改固件源码与文档；尚未烧录、未部署、未修改 IoT 后端、群晖、桥接器或 MQTT 凭证。
 
 ### 18.2 官方 MCP 的自然语言提醒适配
 
