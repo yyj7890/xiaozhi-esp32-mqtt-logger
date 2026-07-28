@@ -15,7 +15,7 @@ services:
         max-file: "3"
 
   xiaozhi-mcp-bridge:
-    image: local/xiaozhi-mcp-bridge:0.1.1
+    image: local/xiaozhi-mcp-bridge:0.1.6
     container_name: xiaozhi-mcp-bridge
     restart: unless-stopped
     network_mode: host

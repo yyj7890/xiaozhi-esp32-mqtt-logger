@@ -18,6 +18,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* /opt/mcp-pipe/.git
 
 COPY bridge_entrypoint.py /app/bridge_entrypoint.py
+COPY iot_reminder_mcp.py /app/iot_reminder_mcp.py
+COPY audited_mcp_proxy.py /app/audited_mcp_proxy.py
 
 WORKDIR /opt/mcp-pipe
 ENTRYPOINT ["python", "/app/bridge_entrypoint.py"]

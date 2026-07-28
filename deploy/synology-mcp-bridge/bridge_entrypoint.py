@@ -40,13 +40,18 @@ def wait_for_home_assistant(url: str) -> None:
                 print(f"Home Assistant is reachable at {host}:{port}", flush=True)
                 return
         except OSError:
-            print(f"Waiting for Home Assistant at {host}:{port}...", flush=True)
+            print(
+                f"Waiting for Home Assistant at {host}:{port}...",
+                flush=True,
+            )
             time.sleep(5)
 
 
 def main() -> None:
     endpoint = validate_url(
-        "MCP_ENDPOINT", required_env("MCP_ENDPOINT"), {"ws", "wss"}
+        "MCP_ENDPOINT",
+        required_env("MCP_ENDPOINT"),
+        {"ws", "wss"},
     )
     ha_url = validate_url(
         "HA_MCP_URL",
@@ -55,21 +60,47 @@ def main() -> None:
     )
     ha_token = required_env("HA_TOKEN")
 
-    servers = {"home-assistant": {"type": "http", "url": ha_url}}
+    servers = {
+        "home-assistant": {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["/app/audited_mcp_proxy.py", ha_url],
+            "env": {"IOT_API_URL": os.environ.get("IOT_API_URL", "http://127.0.0.1:8080")},
+        }
+    }
     pc_url = os.environ.get("PC_MCP_URL", "").strip()
     if pc_url:
         servers["windows-laptop"] = {
-            "type": "http",
-            "url": validate_url("PC_MCP_URL", pc_url, {"http", "https"}),
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["/app/audited_mcp_proxy.py", validate_url("PC_MCP_URL", pc_url, {"http", "https"})],
+            "env": {"IOT_API_URL": os.environ.get("IOT_API_URL", "http://127.0.0.1:8080")},
         }
 
+    iot_url = os.environ.get("IOT_API_URL", "http://127.0.0.1:8080").strip()
+    servers["aiot-reminders"] = {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["/app/iot_reminder_mcp.py"],
+        "env": {
+            "IOT_API_URL": validate_url("IOT_API_URL", iot_url, {"http", "https"}),
+            # This value is intentionally not printed or copied into audit logs.
+            "DEFAULT_DEVICE_CODE": os.environ.get("DEFAULT_DEVICE_CODE", "").strip(),
+        },
+    }
+
     config = {"mcpServers": servers}
-    GENERATED_CONFIG.write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+    GENERATED_CONFIG.write_text(
+        json.dumps(config, ensure_ascii=False),
+        encoding="utf-8",
+    )
     os.chmod(GENERATED_CONFIG, 0o600)
 
     os.environ["MCP_ENDPOINT"] = endpoint
     os.environ["MCP_CONFIG"] = str(GENERATED_CONFIG)
     # mcp-proxy reads this variable and builds the Authorization header.
+    # Keeping the token out of mcp_config also prevents it from appearing in
+    # the child process command line.
     os.environ["API_ACCESS_TOKEN"] = ha_token
 
     wait_for_home_assistant(ha_url)
