@@ -24,3 +24,11 @@ main/mmap_generate_emoji.h
 docs/PROJECT_RECORD_zh.md
 mmap_generate_*.h
 .clangd
+
+# Local Windows MCP deployment data: source is tracked, personal configuration
+# and runtime artifacts must remain on the laptop.
+deploy/windows-mcp-agent/apps.json
+deploy/windows-mcp-agent/agent-status.txt
+deploy/windows-mcp-agent/*.log
+deploy/windows-mcp-agent/logs/
+deploy/windows-mcp-agent/captures/
