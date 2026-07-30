@@ -11,7 +11,7 @@ GitHub 默认首页只展示稳定基线；正在维护的功能位于以下独�
 | 内容 | 分支 | 当前状态 |
 | --- | --- | --- |
 | ESP32 AIoT 远程 MQTT 固件 | [`feature/aiot-remote-mqtt-firmware`](https://github.com/yyj7890/xiaozhi-esp32-mqtt-logger/tree/feature/aiot-remote-mqtt-firmware) | 独立日志、局域网发现及主动播报 MQTT/Opus 源码；主动播报已完成源码和构建验证，尚未真实 MQTT 联调或烧录。 |
-| Synology MCP 桥接器 | [`feature/synology-mcp-bridge`](https://github.com/yyj7890/xiaozhi-esp32-mqtt-logger/tree/feature/synology-mcp-bridge/deploy/synology-mcp-bridge) | DS920+ 的官方小智 MCP → Home Assistant / 提醒 / 笔记本白名单工具桥接器；当前桥接器版本 `0.1.6`，包含提醒默认目标设备修复。 |
+| Synology MCP 桥接器 | [`feature/synology-mcp-bridge`](https://github.com/yyj7890/xiaozhi-esp32-mqtt-logger/tree/feature/synology-mcp-bridge/deploy/synology-mcp-bridge) | DS920+ 的官方小智 MCP → Home Assistant / 提醒 / 笔记本白名单工具桥接器；当前桥接器版本 `0.1.7`，包含提醒默认目标及已验证的卧室空调控制。 |
 
 这两个组件不是同一个程序：固件不保存 NAS、Home Assistant 或小智的私密配置；桥接器不修改固件、IoT 后端、MQTT 协议或 Home Assistant。请勿将 `bridge.env`、`sdkconfig`、Token、设备编号、照片或运行日志提交到 GitHub。
 
