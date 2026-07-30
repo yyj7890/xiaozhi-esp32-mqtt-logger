@@ -30,6 +30,13 @@ def validate_url(name: str, value: str, schemes: set[str]) -> str:
     return value
 
 
+def home_assistant_api_url(mcp_url: str) -> str:
+    """Derive the Home Assistant REST API base without exposing credentials."""
+    parsed = urlparse(mcp_url)
+    prefix = parsed.path.split("/api/", 1)[0].rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}{prefix}/api"
+
+
 def wait_for_home_assistant(url: str) -> None:
     parsed = urlparse(url)
     host = parsed.hostname
@@ -59,14 +66,31 @@ def main() -> None:
         {"http", "https"},
     )
     ha_token = required_env("HA_TOKEN")
+    ha_api_url = home_assistant_api_url(ha_url)
 
     servers = {
         "home-assistant": {
             "type": "stdio",
             "command": sys.executable,
             "args": ["/app/audited_mcp_proxy.py", ha_url],
-            "env": {"IOT_API_URL": os.environ.get("IOT_API_URL", "http://127.0.0.1:8080")},
+            "env": {
+                "IOT_API_URL": os.environ.get("IOT_API_URL", "http://127.0.0.1:8080"),
+                # The generic tool acknowledges an API call before device state
+                # has been verified. Hide it in favor of the verified climate tools.
+                "HIDE_GENERIC_CLIMATE_TOOLS": "1",
+            },
         }
+    }
+    servers["bedroom-climate"] = {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["/app/ha_climate_mcp.py"],
+        "env": {
+            "HA_API_URL": ha_api_url,
+            "HA_TOKEN": ha_token,
+            "DEFAULT_CLIMATE_ENTITY_ID": os.environ.get("DEFAULT_CLIMATE_ENTITY_ID", "").strip(),
+            "IOT_API_URL": os.environ.get("IOT_API_URL", "http://127.0.0.1:8080"),
+        },
     }
     pc_url = os.environ.get("PC_MCP_URL", "").strip()
     if pc_url:

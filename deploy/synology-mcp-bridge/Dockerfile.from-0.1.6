@@ -1,0 +1,8 @@
+# Local packaging fallback: build 0.1.7 from an already verified 0.1.6 image
+# when external Debian/PyPI/GitHub dependency sources are temporarily offline.
+FROM local/xiaozhi-mcp-bridge:0.1.6
+
+COPY bridge_entrypoint.py /app/bridge_entrypoint.py
+COPY iot_reminder_mcp.py /app/iot_reminder_mcp.py
+COPY audited_mcp_proxy.py /app/audited_mcp_proxy.py
+COPY ha_climate_mcp.py /app/ha_climate_mcp.py

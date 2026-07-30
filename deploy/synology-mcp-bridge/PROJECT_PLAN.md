@@ -60,3 +60,15 @@
 - 隐私：真实设备编号、Token 与包含私密参数的 URL 不写入桥接器或审计日志；审计目标
   仅保留由最终目标派生的不可逆摘要。
 - 范围：仅修改桥接器，不修改 IoT 后端、小智固件、MQTT 协议或 Home Assistant。
+
+## 2026-07-30 更新：已验证的卧室空调控制（桥接器 0.1.7）
+
+- 排查确认：在 Home Assistant 开发者工具中直接调用 `climate.set_temperature` 能够实际改变
+  美的空调温度，因此设备和 Home Assistant 集成本身正常；旧通用 MCP 工具的问题是仅确认
+  API 调用已接受，未确认设备最终状态。
+- 修复：新增卧室空调的已验证设温度、风速、上下摆风和左右摆风 MCP 工具。每项控制均使用
+  Home Assistant REST 动作后回读状态；未确认则返回失败，不再错误报告成功。
+- 为避免小智继续选择旧工具，桥接器会隐藏非验证的 `HassClimateSetTemperature`，并在只有
+  一个 `climate.*` 实体时自动发现目标；多空调时才需在私有 `bridge.env` 设置
+  `DEFAULT_CLIMATE_ENTITY_ID`。
+- 范围：仅修改桥接器；未修改 Home Assistant、美的集成、小智固件、IoT 后端或 MQTT 协议。

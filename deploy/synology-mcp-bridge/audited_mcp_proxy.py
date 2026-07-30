@@ -5,6 +5,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 pending: dict[str, tuple[str, str]] = {}
+GENERIC_CLIMATE_TOOLS = {"HassClimateSetTemperature"}
 
 def audit(tool: str, target: str, status: str, result: str) -> None:
     base = os.environ.get("IOT_API_URL", "").rstrip("/")
@@ -23,6 +24,18 @@ def target_of(arguments: object) -> str:
         if isinstance(value, str): return value
     return ""
 
+def hide_generic_climate_tools(message: dict[str, object]) -> None:
+    """Remove non-verifying climate tools when a verified wrapper is enabled."""
+    if os.environ.get("HIDE_GENERIC_CLIMATE_TOOLS") != "1": return
+    result = message.get("result")
+    if not isinstance(result, dict): return
+    tools = result.get("tools")
+    if not isinstance(tools, list): return
+    result["tools"] = [
+        tool for tool in tools
+        if not isinstance(tool, dict) or tool.get("name") not in GENERIC_CLIMATE_TOOLS
+    ]
+
 def stdin_loop(process: subprocess.Popen[str]) -> None:
     for line in sys.stdin:
         try:
@@ -36,11 +49,13 @@ def stdin_loop(process: subprocess.Popen[str]) -> None:
 
 def stdout_loop(process: subprocess.Popen[str]) -> None:
     for line in process.stdout:
+        forward = line
         try:
-            msg = json.loads(line); call = pending.pop(str(msg.get("id")), None)
+            msg = json.loads(line); hide_generic_climate_tools(msg); call = pending.pop(str(msg.get("id")), None)
             if call: audit(call[0], call[1], "FAILED" if "error" in msg else "SUCCEEDED", "Tool call completed" if "error" not in msg else "Tool call failed")
+            forward = json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n"
         except (ValueError, AttributeError): pass
-        sys.stdout.write(line); sys.stdout.flush()
+        sys.stdout.write(forward); sys.stdout.flush()
 
 if __name__ == "__main__":
     if len(sys.argv) != 2: raise SystemExit("usage: audited_mcp_proxy.py <mcp-url>")

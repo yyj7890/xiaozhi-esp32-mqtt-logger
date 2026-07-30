@@ -81,6 +81,8 @@ HA_MCP_URL=http://127.0.0.1:8123/api/mcp
 HA_TOKEN=Home_Assistant_长期访问令牌
 IOT_API_URL=http://127.0.0.1:8080
 DEFAULT_DEVICE_CODE=你的当前小智设备编号
+# 若 HA 中不止一个空调实体，填写例如 climate.midea_ac；只有一个时留空即可
+DEFAULT_CLIMATE_ENTITY_ID=
 ```
 
 `DEFAULT_DEVICE_CODE` 是提醒默认投递目标。设置后，它会优先于官方小智
@@ -93,6 +95,14 @@ MCP 调用中可能残留的设备编号；因此创建和查询提醒都会使�
 由桥接器根据设备、文本和时间生成稳定幂等标识，避免官方 MCP 重试重复创建。
 IoT 后端不可用时，仅提醒工具返回错误，Home Assistant 和笔记本工具不受影响。
 Home Assistant、笔记本和 IoT 提醒工具的调用会向 IoT 后端写入脱敏操作记录；只记录工具名、目标摘要和成功/失败，不记录 Token 或完整参数。
+
+桥接器 `0.1.7` 额外提供已验证的卧室空调工具：`BedroomClimateSetTemperature`、
+`BedroomClimateSetFanMode`、`BedroomClimateSetSwingMode` 与
+`BedroomClimateSetHorizontalSwingMode`。设定温度、风速或风向后，桥接器会读取
+Home Assistant 状态；状态未确认时会返回失败，而不会错误地说“成功”。若 HA 中只有
+一个 `climate.*` 实体，无需配置 `DEFAULT_CLIMATE_ENTITY_ID`；有多个空调时才在私有
+`bridge.env` 设置该项。旧的、不验证状态的 `HassClimateSetTemperature` 会从小智的
+工具列表隐藏，避免小智继续选到它。
 
 在 Container Manager 中重新构建项目，以便重建容器并加载新的环境变量。
 仅点击“重启容器”不会重新读取修改后的 `bridge.env`。
@@ -143,3 +153,10 @@ pc_take_photo
   摘要只保存不可逆指纹，不保存真实设备编号、Token 或含私密参数的 URL。
 - 新增单元测试，覆盖默认优先、回退传入编号、无目标报错与摘要脱敏。
 - 此版本只修改桥接器；未修改 IoT 后端、小智固件、MQTT 协议或 Home Assistant。
+
+### 0.1.7（2026-07-30）
+
+- 新增已验证的卧室空调设温度、风速、上下摆风和左右摆风工具；只有 HA 回读到所需
+  状态才返回成功。
+- 隐藏旧的 `HassClimateSetTemperature`，防止其“调用已接受但设备未确认”时被误报为成功。
+- 不修改 Home Assistant、美的集成、小智固件、IoT 后端或 MQTT 协议。
