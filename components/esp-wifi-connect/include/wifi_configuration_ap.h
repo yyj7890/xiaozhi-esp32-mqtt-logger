@@ -71,6 +71,7 @@ private:
     int8_t max_tx_power_;
     bool remember_bssid_;
     bool sleep_mode_;
+    bool local_ai_service_;
 
     // Callbacks
     std::function<void()> on_exit_requested_;

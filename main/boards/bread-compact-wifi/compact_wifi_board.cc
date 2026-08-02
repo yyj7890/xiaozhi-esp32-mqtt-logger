@@ -63,7 +63,7 @@ private:
                 .disable_control_phase = 0,
             },
             // Some 0.91-inch SSD1306 modules can hold the bus busy under heavy
-            // 400 kHz refresh traffic. 100 kHz favors display/audio stability.
+            // 400 kHz refresh traffic. 200 kHz is the stable, smoother middle ground.
             .scl_speed_hz = DISPLAY_I2C_CLOCK_HZ,
         };
 

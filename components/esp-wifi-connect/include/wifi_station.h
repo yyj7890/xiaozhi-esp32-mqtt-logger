@@ -69,6 +69,7 @@ private:
     int8_t max_tx_power_;
     uint8_t remember_bssid_;
     int reconnect_count_ = 0;
+    bool fast_connect_attempt_ = false;
 
     // Exponential backoff for scan interval
     int scan_min_interval_microseconds_ = 10 * 1000 * 1000;   // Default 10 seconds
@@ -82,7 +83,10 @@ private:
     bool was_connected_ = false;  // Track if we were connected before disconnection
 
     void HandleScanResult();
+    void StartScan();
     void StartConnect();
+    bool StartFastConnect();
+    void SaveFastConnectHint();
     void UpdateScanInterval();  // Exponential backoff for scan interval
     static void WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
     static void IpEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);

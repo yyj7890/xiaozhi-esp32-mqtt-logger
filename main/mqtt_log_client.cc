@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <sys/time.h>
 
 #include <cJSON.h>
 #include <aiot_log_config.h>
@@ -19,6 +20,7 @@
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
 #include <mbedtls/x509_crt.h>
+#include <nvs.h>
 
 namespace {
 constexpr const char* TAG = "MqttLog";
@@ -137,6 +139,18 @@ void MqttLogClient::Start() {
         return;
     }
     remote_mode_ = runtime_config.remote_mode;
+    if (remote_mode_) {
+        // Use the last official-service time so TLS can begin alongside
+        // activation on the next boot, rather than waiting for it again.
+        RestoreCachedTrustedTime();
+    }
+    uint8_t local_service = 0;
+    nvs_handle_t service_nvs;
+    if (nvs_open("wifi", NVS_READONLY, &service_nvs) == ESP_OK) {
+        nvs_get_u8(service_nvs, "local_ai_service", &local_service);
+        nvs_close(service_nvs);
+    }
+    local_service_mode_ = local_service != 0;
     // Preserve the existing LAN startup gate. The new remote profile is
     // deliberately best-effort: DNS, TLS or credential failures must never
     // prevent the official XiaoZhi services from starting.
@@ -296,7 +310,7 @@ void MqttLogClient::TaskLoop() {
             retry_delay_ms_ = retry_min_ms_;
         }
         if (discovery_requested_.exchange(false)) {
-            if (remote_mode_) {
+            if (remote_mode_ || !local_service_mode_) {
                 active_broker_ = fallback_broker_;
                 using_discovered_broker_ = false;
                 std::lock_guard<std::mutex> lock(discovered_broker_mutex_);
@@ -515,6 +529,7 @@ MqttLogClient::ConnectionAttemptResult MqttLogClient::EnsureConnected() {
             ESP_LOGI(TAG, "Trusted system time is available for remote AIoT TLS");
             waiting_for_trusted_time_logged_ = false;
         }
+        SaveTrustedTime();
     }
     esp_mqtt_client_config_t config{};
     config.task.stack_size = 4096;
@@ -719,6 +734,34 @@ std::string MqttLogClient::GetReportedAt() const {
         if (std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &utc)) return timestamp;
     }
     return "";
+}
+
+void MqttLogClient::RestoreCachedTrustedTime() {
+    nvs_handle_t nvs;
+    if (nvs_open("aiot_log", NVS_READONLY, &nvs) != ESP_OK) return;
+    int64_t cached_epoch = 0;
+    const esp_err_t result = nvs_get_i64(nvs, "tls_epoch", &cached_epoch);
+    nvs_close(nvs);
+    if (result != ESP_OK || cached_epoch < kValidUnixTime) return;
+
+    timeval cached_time{};
+    cached_time.tv_sec = static_cast<time_t>(cached_epoch);
+    if (settimeofday(&cached_time, nullptr) == 0) {
+        ESP_LOGI(TAG, "Restored cached trusted time for early remote TLS");
+    }
+}
+
+void MqttLogClient::SaveTrustedTime() {
+    if (trusted_time_persisted_) return;
+    const std::time_t now = std::time(nullptr);
+    if (now < kValidUnixTime) return;
+    nvs_handle_t nvs;
+    if (nvs_open("aiot_log", NVS_READWRITE, &nvs) != ESP_OK) return;
+    if (nvs_set_i64(nvs, "tls_epoch", static_cast<int64_t>(now)) == ESP_OK) {
+        nvs_commit(nvs);
+        trusted_time_persisted_ = true;
+    }
+    nvs_close(nvs);
 }
 
 bool MqttLogClient::IsPrivateIpv4(const char* ip) {

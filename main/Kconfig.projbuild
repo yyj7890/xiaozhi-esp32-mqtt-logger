@@ -65,7 +65,7 @@ config AIOT_MQTT_LOG_RETRY_MIN_SECONDS
     int "MQTT retry minimum seconds"
     depends on AIOT_MQTT_LOG_ENABLED
     range 1 300
-    default 5
+    default 1
 
 config AIOT_MQTT_LOG_RETRY_MAX_SECONDS
     int "MQTT retry maximum seconds"
@@ -78,8 +78,10 @@ config AIOT_MQTT_LOG_DISCOVERY_ENABLED
     depends on AIOT_MQTT_LOG_ENABLED
     default y
     help
-        Discovers a log-only MQTT broker after Wi-Fi connects. Official Xiaozhi
-        AI server addresses are never read or changed by this feature.
+        Discovers a log-only MQTT broker after Wi-Fi connects. Disable this
+        when the broker address is configured manually to avoid startup delay.
+        Official Xiaozhi AI server addresses are never read or changed by this
+        feature.
 
 config AIOT_MQTT_LOG_DISCOVERY_PORT
     int "UDP discovery port"

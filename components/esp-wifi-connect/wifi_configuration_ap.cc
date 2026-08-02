@@ -38,7 +38,8 @@ WifiConfigurationAp::WifiConfigurationAp()
     instance_any_id_ = nullptr;
     instance_got_ip_ = nullptr;
     max_tx_power_ = 0;
-    remember_bssid_ = false;
+    remember_bssid_ = true;
+    local_ai_service_ = false;
 }
 
 std::vector<wifi_ap_record_t> WifiConfigurationAp::GetAccessPoints()
@@ -207,7 +208,7 @@ void WifiConfigurationAp::StartAccessPoint()
         if (err == ESP_OK) {
             remember_bssid_ = remember_bssid != 0;
         } else {
-            remember_bssid_ = false; // 默认值
+            remember_bssid_ = true; // 默认启用快速重连，连接失败会自动回退扫描
         }
 
         // 读取睡眠模式设置
@@ -219,6 +220,10 @@ void WifiConfigurationAp::StartAccessPoint()
             sleep_mode_ = true; // 默认值
         }
 
+        uint8_t local_ai_service = 0;
+        if (nvs_get_u8(nvs, "local_ai_service", &local_ai_service) == ESP_OK) {
+            local_ai_service_ = local_ai_service != 0;
+        }
         nvs_close(nvs);
     }
 }
@@ -533,6 +538,7 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddNumberToObject(json, "max_tx_power", this_->max_tx_power_);
             cJSON_AddBoolToObject(json, "remember_bssid", this_->remember_bssid_);
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
+            cJSON_AddBoolToObject(json, "local_ai_service", this_->local_ai_service_);
 
             // 发送JSON响应
             char *json_str = cJSON_PrintUnformatted(json);
@@ -645,6 +651,15 @@ void WifiConfigurationAp::StartWebServer()
                 err = nvs_set_u8(nvs, "sleep_mode", this_->sleep_mode_ ? 1 : 0);
                 if (err != ESP_OK) {
                     ESP_LOGE(TAG, "Failed to save sleep_mode: %d", err);
+                }
+            }
+
+            cJSON *local_ai_service = cJSON_GetObjectItem(json, "local_ai_service");
+            if (cJSON_IsBool(local_ai_service)) {
+                this_->local_ai_service_ = cJSON_IsTrue(local_ai_service);
+                err = nvs_set_u8(nvs, "local_ai_service", this_->local_ai_service_ ? 1 : 0);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to save AI service mode: %d", err);
                 }
             }
 

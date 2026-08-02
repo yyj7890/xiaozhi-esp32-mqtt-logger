@@ -36,7 +36,9 @@
 
 #define DISPLAY_SDA_PIN GPIO_NUM_41
 #define DISPLAY_SCL_PIN GPIO_NUM_42
-#define DISPLAY_I2C_CLOCK_HZ 100000
+// 200 kHz doubles OLED refresh bandwidth while remaining below the 400 kHz
+// setting that proved unstable on some 0.91-inch modules.
+#define DISPLAY_I2C_CLOCK_HZ 200000
 #define DISPLAY_WIDTH   128
 
 #if CONFIG_OLED_SSD1306_128X32

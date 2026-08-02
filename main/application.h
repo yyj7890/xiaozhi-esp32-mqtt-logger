@@ -162,6 +162,8 @@ private:
     std::atomic_bool local_ai_fallback_pending_{false};
     std::atomic_bool local_ai_fallback_started_{false};
     std::atomic_bool local_ai_fallback_reported_{false};
+    // The startup record is emitted only after the UI has entered standby.
+    std::atomic_bool startup_log_pending_{false};
 
 
     // Event handlers

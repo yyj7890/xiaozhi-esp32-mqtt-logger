@@ -1072,6 +1072,7 @@ idf_component_register(SRCS ${SOURCES}
                         fatfs
                         mqtt
                         esp-tls
+                        nvs_flash
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 

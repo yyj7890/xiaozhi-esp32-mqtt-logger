@@ -41,7 +41,7 @@
             background-color: #ccc;
             cursor: not-allowed;
         }
-    #remember_bssid, #sleep_mode, #aiot_enabled, #aiot_remote_mode, #aiot_clear_password, #aiot_clear_token {
+    #remember_bssid, #sleep_mode, #aiot_enabled, #aiot_remote_mode, #aiot_clear_password, #aiot_clear_token, input[name="ai_service"] {
             width: auto;
         }
 
@@ -311,6 +311,12 @@
                         <span data-lang="sleep_mode">Enable Sleep Mode</span>
                     </label>
                     <input type="checkbox" id="sleep_mode" name="sleep_mode">
+                </p>
+
+                <p>
+                    <label>AI 服务：</label><br>
+                    <label><input type="radio" name="ai_service" value="official" checked> 官方服务（跳过局域网发现，启动更快）</label><br>
+                    <label><input type="radio" name="ai_service" value="local"> 本地服务（启动时发现本地小智与本地日志 Broker）</label>
                 </p>
 
                 <p style="text-align: center;">
@@ -1386,7 +1392,8 @@
                 ota_url: document.getElementById('ota_url').value,
                 max_tx_power: parseInt(document.getElementById('max_tx_power').value),
                 remember_bssid: document.getElementById('remember_bssid').checked,
-                sleep_mode: document.getElementById('sleep_mode').checked
+                sleep_mode: document.getElementById('sleep_mode').checked,
+                local_ai_service: document.querySelector('input[name="ai_service"]:checked').value === 'local'
             };
 
             try {
@@ -1555,6 +1562,9 @@
                 if (data.sleep_mode !== undefined) {
                     document.getElementById('sleep_mode').checked = data.sleep_mode;
                 }
+                const service = data.local_ai_service ? 'local' : 'official';
+                const serviceRadio = document.querySelector(`input[name="ai_service"][value="${service}"]`);
+                if (serviceRadio) serviceRadio.checked = true;
             } catch (error) {
                 console.error('Error loading advanced config:', error);
             }

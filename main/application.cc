@@ -14,6 +14,7 @@
 
 #include <cstring>
 #include <esp_log.h>
+#include <nvs.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
 #include <arpa/inet.h>
@@ -21,6 +22,17 @@
 
 #define TAG "Application"
 
+namespace {
+bool IsLocalAiServiceEnabled() {
+    nvs_handle_t nvs;
+    uint8_t enabled = 0;
+    if (nvs_open("wifi", NVS_READONLY, &nvs) == ESP_OK) {
+        nvs_get_u8(nvs, "local_ai_service", &enabled);
+        nvs_close(nvs);
+    }
+    return enabled != 0;
+}
+}  // namespace
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -97,8 +109,6 @@ void Application::Initialize() {
 
     auto& mqtt_log = MqttLogClient::GetInstance();
     mqtt_log.Start();
-    mqtt_log.Report("NORMAL", "Firmware initialization started");
-    mqtt_log.Log("startup", "INFO", "Firmware initialization started");
 
     // Start the clock timer to update the status bar
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -332,6 +342,11 @@ void Application::HandleActivationDoneEvent() {
     ESP_LOGI(TAG, "Activation done");
 
     SystemInfo::PrintHeapStats();
+    // Do not enqueue the dashboard startup record during early initialization:
+    // Wi-Fi/MQTT may still be connecting then, making it appear seconds after
+    // the device already shows standby.  HandleStateChangedEvent emits it once
+    // the standby UI has actually been rendered.
+    startup_log_pending_.store(true);
     SetDeviceState(kDeviceStateIdle);
 
     has_server_time_ = ota_->HasServerTime();
@@ -409,16 +424,20 @@ void Application::ActivationTask() {
         return;
     }
 
-    LocalAiEndpoint local_endpoint;
-    if (LocalAiDiscovery().Discover(&local_endpoint)) {
-        local_ai_discovered_this_boot_.store(true);
-        ota_->SetTemporaryLocalEndpoint(local_endpoint.ota_url, local_endpoint.websocket_url);
-        MqttLogClient::GetInstance().Log("local_ai_discovered", "INFO", "Local AI server discovered");
+    if (IsLocalAiServiceEnabled()) {
+        LocalAiEndpoint local_endpoint;
+        if (LocalAiDiscovery().Discover(&local_endpoint)) {
+            local_ai_discovered_this_boot_.store(true);
+            ota_->SetTemporaryLocalEndpoint(local_endpoint.ota_url, local_endpoint.websocket_url);
+            MqttLogClient::GetInstance().Log("local_ai_discovered", "INFO", "Local AI server discovered");
+        } else {
+            // There is no local candidate without a response in this boot. A
+            // cached URL, a log-broker address, or a prior boot is not discovery.
+            local_ai_fallback_pending_.store(true);
+            MqttLogClient::GetInstance().Log("local_ai_discovery_failed", "WARNING", "No valid local AI discovery response this boot");
+        }
     } else {
-        // There is no local candidate without a response in this boot. A
-        // cached URL, a log-broker address, or a prior boot is not discovery.
-        local_ai_fallback_pending_.store(true);
-        MqttLogClient::GetInstance().Log("local_ai_discovery_failed", "WARNING", "No valid local AI discovery response this boot");
+        ESP_LOGI(TAG, "Official AI service selected; skipping LAN AI discovery");
     }
 
     // Check for new assets version
@@ -1037,13 +1056,18 @@ void Application::HandleStateChangedEvent() {
     led->OnStateChanged();
     
     switch (new_state) {
-        case kDeviceStateUnknown:
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+            if (startup_log_pending_.exchange(false)) {
+                MqttLogClient::GetInstance().Report("NORMAL", "Firmware startup completed");
+                MqttLogClient::GetInstance().Log("startup", "INFO", "Firmware startup completed");
+            }
+            break;
+        case kDeviceStateUnknown:
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);

@@ -24,18 +24,27 @@ WifiStation::WifiStation() {
 
     // 读取配置
     nvs_handle_t nvs;
-    esp_err_t err = nvs_open("wifi", NVS_READONLY, &nvs);
+    esp_err_t err = nvs_open("wifi", NVS_READWRITE, &nvs);
     if (err != ESP_OK) {
         max_tx_power_ = 0;
-        remember_bssid_ = 0;
+        remember_bssid_ = 1;
     } else {
         err = nvs_get_i8(nvs, "max_tx_power", &max_tx_power_);
         if (err != ESP_OK) {
             max_tx_power_ = 0;
         }
         err = nvs_get_u8(nvs, "remember_bssid", &remember_bssid_);
-        if (err != ESP_OK) {
-            remember_bssid_ = 0;
+        uint8_t fast_boot_migrated = 0;
+        const bool needs_fast_boot_migration =
+            nvs_get_u8(nvs, "fast_boot_v1", &fast_boot_migrated) != ESP_OK;
+        if (err != ESP_OK || needs_fast_boot_migration) {
+            // Older firmware defaulted this switch to off.  Enable the new
+            // fast reconnect once on upgrade; it can still be disabled later
+            // in the configuration page.
+            remember_bssid_ = 1;
+            nvs_set_u8(nvs, "remember_bssid", remember_bssid_);
+            nvs_set_u8(nvs, "fast_boot_v1", 1);
+            nvs_commit(nvs);
         }
         nvs_close(nvs);
     }
@@ -132,13 +141,6 @@ void WifiStation::Start() {
                                                         &WifiStation::IpEventHandler,
                                                         this,
                                                         &instance_got_ip_));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    if (max_tx_power_ != 0) {
-        ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(max_tx_power_));
-    }
-
     // Setup the timer to scan WiFi.
     // skip_unhandled_events = false so the timer can wake the CPU from light
     // sleep on its own; otherwise an idle device that failed to connect would
@@ -147,7 +149,7 @@ void WifiStation::Start() {
     // from light-sleep wakeup sources.
     esp_timer_create_args_t timer_args = {
         .callback = [](void* arg) {
-            esp_wifi_scan_start(nullptr, false);
+            static_cast<WifiStation*>(arg)->StartScan();
         },
         .arg = this,
         .dispatch_method = ESP_TIMER_TASK,
@@ -155,6 +157,13 @@ void WifiStation::Start() {
         .skip_unhandled_events = false
     };
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer_handle_));
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    if (max_tx_power_ != 0) {
+        ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(max_tx_power_));
+    }
 }
 
 bool WifiStation::WaitForConnected(int timeout_ms) {
@@ -209,6 +218,94 @@ void WifiStation::HandleScanResult() {
     }
 
     StartConnect();
+}
+
+void WifiStation::StartScan() {
+    fast_connect_attempt_ = false;
+    ESP_LOGI(TAG, "Scanning for configured WiFi networks");
+    esp_err_t err = esp_wifi_scan_start(nullptr, false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to start WiFi scan: %s", esp_err_to_name(err));
+        return;
+    }
+    if (on_scan_begin_) {
+        on_scan_begin_();
+    }
+}
+
+bool WifiStation::StartFastConnect() {
+    if (!remember_bssid_) {
+        return false;
+    }
+
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READONLY, &nvs) != ESP_OK) {
+        return false;
+    }
+
+    char saved_ssid[33] = {0};
+    size_t ssid_length = sizeof(saved_ssid);
+    uint8_t bssid[6] = {0};
+    size_t bssid_length = sizeof(bssid);
+    uint8_t channel = 0;
+    const bool valid_hint = nvs_get_str(nvs, "fast_ssid", saved_ssid, &ssid_length) == ESP_OK &&
+                            nvs_get_blob(nvs, "fast_bssid", bssid, &bssid_length) == ESP_OK &&
+                            bssid_length == sizeof(bssid) &&
+                            nvs_get_u8(nvs, "fast_channel", &channel) == ESP_OK && channel > 0;
+    nvs_close(nvs);
+    if (!valid_hint) {
+        return false;
+    }
+
+    const auto& ssid_list = SsidManager::GetInstance().GetSsidList();
+    auto it = std::find_if(ssid_list.begin(), ssid_list.end(), [&saved_ssid](const SsidItem& item) {
+        return item.ssid == saved_ssid;
+    });
+    if (it == ssid_list.end()) {
+        return false;
+    }
+
+    wifi_config_t wifi_config = {};
+    strcpy((char*)wifi_config.sta.ssid, it->ssid.c_str());
+    strcpy((char*)wifi_config.sta.password, it->password.c_str());
+    wifi_config.sta.channel = channel;
+    memcpy(wifi_config.sta.bssid, bssid, sizeof(bssid));
+    wifi_config.sta.bssid_set = true;
+    wifi_config.sta.listen_interval = 10;
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+    ssid_ = it->ssid;
+    password_ = it->password;
+    reconnect_count_ = 0;
+    fast_connect_attempt_ = true;
+    ESP_LOGI(TAG, "Fast connecting to saved AP: %s (channel %u)", ssid_.c_str(), channel);
+    if (on_connect_) {
+        on_connect_(ssid_);
+    }
+    ESP_ERROR_CHECK(esp_wifi_connect());
+    return true;
+}
+
+void WifiStation::SaveFastConnectHint() {
+    if (!remember_bssid_) {
+        return;
+    }
+
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK || ap_info.primary == 0) {
+        return;
+    }
+
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    nvs_set_str(nvs, "fast_ssid", (const char*)ap_info.ssid);
+    nvs_set_blob(nvs, "fast_bssid", ap_info.bssid, sizeof(ap_info.bssid));
+    nvs_set_u8(nvs, "fast_channel", ap_info.primary);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+    ESP_LOGI(TAG, "Saved AP hint for faster next startup (channel %u)", ap_info.primary);
 }
 
 void WifiStation::StartConnect() {
@@ -313,9 +410,8 @@ void WifiStation::UpdateScanInterval() {
 void WifiStation::WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     auto* this_ = static_cast<WifiStation*>(arg);
     if (event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_scan_start(nullptr, false);
-        if (this_->on_scan_begin_) {
-            this_->on_scan_begin_();
+        if (!this_->StartFastConnect()) {
+            this_->StartScan();
         }
     } else if (event_id == WIFI_EVENT_SCAN_DONE) {
         xEventGroupSetBits(this_->event_group_, WIFI_EVENT_SCAN_DONE_BIT);
@@ -330,6 +426,12 @@ void WifiStation::WifiEventHandler(void* arg, esp_event_base_t event_base, int32
         ESP_LOGI(TAG, "WiFi disconnected, reason: %d", event->reason);
         if (was_connected && this_->on_disconnected_) {
             this_->on_disconnected_(event->reason);
+        }
+
+        if (this_->fast_connect_attempt_) {
+            ESP_LOGW(TAG, "Saved AP unavailable; falling back to scan immediately");
+            this_->StartScan();
+            return;
         }
 
         if (this_->reconnect_count_ < MAX_RECONNECT_COUNT) {
@@ -368,6 +470,8 @@ void WifiStation::IpEventHandler(void* arg, esp_event_base_t event_base, int32_t
     }
     this_->connect_queue_.clear();
     this_->reconnect_count_ = 0;
+    this_->fast_connect_attempt_ = false;
+    this_->SaveFastConnectHint();
 
     // Reset scan interval to minimum for fast reconnect if disconnected later
     this_->scan_current_interval_microseconds_ = this_->scan_min_interval_microseconds_;

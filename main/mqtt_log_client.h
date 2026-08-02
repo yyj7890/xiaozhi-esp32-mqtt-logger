@@ -87,6 +87,8 @@ private:
     std::string BuildDeviceCode() const;
     std::string BuildClientId() const;
     std::string GetReportedAt() const;
+    void RestoreCachedTrustedTime();
+    void SaveTrustedTime();
     static bool IsPrivateIpv4(const char* ip);
 
     QueueHandle_t queue_ = nullptr;
@@ -110,7 +112,10 @@ private:
     Broker fallback_broker_;
     Broker active_broker_;
     bool remote_mode_ = false;
+    // The captive portal selects whether LAN service discovery is desired.
+    bool local_service_mode_ = false;
     bool waiting_for_trusted_time_logged_ = false;
+    bool trusted_time_persisted_ = false;
     bool using_discovered_broker_ = false;
     std::string username_;
     std::string password_;

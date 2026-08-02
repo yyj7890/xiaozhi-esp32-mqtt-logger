@@ -371,8 +371,8 @@ void OledDisplay::SetupUI_128x32() {
     chat_message_label_ = lv_label_create(side_bar_);
     lv_obj_set_size(chat_message_label_, width_ - 32, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_left(chat_message_label_, 2, 0);
-    // Restore continuous subtitles.  The I2C bus remains at 100 kHz as a
-    // hardware-stability safeguard; use a deliberately slow animation.
+    // Keep the I2C bus at its stable 100 kHz setting, but move the subtitle
+    // at a readable pace.  Only the small label region is redrawn per frame.
     lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(chat_message_label_, "");
     static lv_anim_t subtitle_anim;
@@ -380,7 +380,7 @@ void OledDisplay::SetupUI_128x32() {
     lv_anim_set_delay(&subtitle_anim, 1000);
     lv_anim_set_repeat_count(&subtitle_anim, LV_ANIM_REPEAT_INFINITE);
     lv_obj_set_style_anim(chat_message_label_, &subtitle_anim, LV_PART_MAIN);
-    lv_obj_set_style_anim_duration(chat_message_label_, lv_anim_speed_clamped(15, 6000, 60000), LV_PART_MAIN);
+    lv_obj_set_style_anim_duration(chat_message_label_, lv_anim_speed_clamped(40, 2000, 60000), LV_PART_MAIN);
 }
 
 void OledDisplay::SetEmotion(const char* emotion) {
