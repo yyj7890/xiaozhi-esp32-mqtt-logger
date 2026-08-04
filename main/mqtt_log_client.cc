@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
 
 #include <cJSON.h>
 #include <aiot_log_config.h>
@@ -18,6 +19,9 @@
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
 #include <mbedtls/x509_crt.h>
+
+#include "application.h"
+#include "board.h"
 
 namespace {
 constexpr const char* TAG = "MqttLog";
@@ -168,6 +172,10 @@ void MqttLogClient::Start() {
     client_id_ = BuildClientId();
     report_topic_ = "aiot/device/" + device_code_ + "/report";
     log_topic_ = "aiot/device/" + device_code_ + "/log";
+    environment_sensor_device_code_ = runtime_config.environment_sensor_device_code;
+    if (!environment_sensor_device_code_.empty()) {
+        environment_report_topic_ = "aiot/device/" + environment_sensor_device_code_ + "/report";
+    }
 #if CONFIG_AIOT_MQTT_LOG_DISCOVERY_ENABLED
     discovery_port_ = CONFIG_AIOT_MQTT_LOG_DISCOVERY_PORT;
     discovery_timeout_ms_ = CONFIG_AIOT_MQTT_LOG_DISCOVERY_TIMEOUT_MS;
@@ -562,7 +570,16 @@ void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32
     }
     if (event_id == MQTT_EVENT_CONNECTED) {
         self->connected_.store(true);
+        if (!self->environment_report_topic_.empty()) {
+            const int message_id = esp_mqtt_client_subscribe(event->client, self->environment_report_topic_.c_str(), 1);
+            if (message_id < 0) ESP_LOGW(TAG, "Environment display subscription could not be queued");
+            else ESP_LOGI(TAG, "Environment display subscription queued");
+        }
         xEventGroupSetBits(self->mqtt_events_, kMqttConnected);
+    } else if (event_id == MQTT_EVENT_DATA) {
+        if (event->current_data_offset == 0 && event->data_len == event->total_data_len) {
+            self->HandleEnvironmentReport(event->topic, event->topic_len, event->data, event->data_len);
+        }
     } else if (event_id == MQTT_EVENT_ERROR || event_id == MQTT_EVENT_DISCONNECTED) {
         self->connected_.store(false);
         if (self->mqtt_stop_expected_.load() ||
@@ -576,6 +593,56 @@ void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32
         }
         xEventGroupSetBits(self->mqtt_events_, kMqttFailed);
     }
+}
+
+void MqttLogClient::HandleEnvironmentReport(const char* topic, int topic_length, const char* payload, int payload_length) {
+    if (environment_report_topic_.empty() || topic == nullptr || payload == nullptr || payload_length <= 0 ||
+        environment_report_topic_ != std::string(topic, topic_length)) return;
+    cJSON* root = cJSON_ParseWithLength(payload, payload_length);
+    const cJSON* code = root == nullptr ? nullptr : cJSON_GetObjectItemCaseSensitive(root, "deviceCode");
+    const cJSON* temperature = root == nullptr ? nullptr : cJSON_GetObjectItemCaseSensitive(root, "temperature");
+    const cJSON* humidity = root == nullptr ? nullptr : cJSON_GetObjectItemCaseSensitive(root, "humidity");
+    const cJSON* pressure = root == nullptr ? nullptr : cJSON_GetObjectItemCaseSensitive(root, "pressure");
+    const cJSON* illuminance = root == nullptr ? nullptr : cJSON_GetObjectItemCaseSensitive(root, "illuminance");
+    const bool valid = cJSON_IsString(code) && environment_sensor_device_code_ == code->valuestring &&
+        (cJSON_IsNumber(temperature) || cJSON_IsNumber(humidity) || cJSON_IsNumber(pressure) || cJSON_IsNumber(illuminance));
+    if (!valid) {
+        if (!environment_parse_failure_logged_) {
+            ESP_LOGW(TAG, "Ignored invalid environment report for standby display");
+            environment_parse_failure_logged_ = true;
+        }
+        cJSON_Delete(root); return;
+    }
+    environment_parse_failure_logged_ = false;
+    char temperature_text[20] = "--", humidity_text[20] = "--", pressure_text[20] = "--", illuminance_text[20] = "--";
+    if (cJSON_IsNumber(temperature)) std::snprintf(temperature_text, sizeof(temperature_text), "%.1f°C", temperature->valuedouble);
+    if (cJSON_IsNumber(humidity)) std::snprintf(humidity_text, sizeof(humidity_text), "%.1f%%", humidity->valuedouble);
+    if (cJSON_IsNumber(pressure)) std::snprintf(pressure_text, sizeof(pressure_text), "%.1fhPa", pressure->valuedouble);
+    if (cJSON_IsNumber(illuminance)) std::snprintf(illuminance_text, sizeof(illuminance_text), "%.0flux", illuminance->valuedouble);
+    char status[128]{};
+    std::snprintf(status, sizeof(status), "室内 %s  %s\n%s  %s", temperature_text, humidity_text, pressure_text, illuminance_text);
+    {
+        std::lock_guard<std::mutex> lock(environment_mutex_);
+        environment_status_ = status;
+        environment_received_at_us_ = esp_timer_get_time();
+    }
+    cJSON_Delete(root);
+    Application::GetInstance().Schedule([]() { MqttLogClient::GetInstance().RefreshIdleEnvironmentDisplay(); });
+}
+
+void MqttLogClient::RefreshIdleEnvironmentDisplay() {
+    if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) return;
+    std::string status;
+    const int64_t now = esp_timer_get_time();
+    {
+        std::lock_guard<std::mutex> lock(environment_mutex_);
+        if (environment_status_.empty()) return;
+        status = environment_status_;
+        if (now - environment_received_at_us_ > 180LL * 1000 * 1000) status += "\n室内数据已过期";
+        if (now - environment_last_rendered_at_us_ < 10LL * 1000 * 1000) return;
+        environment_last_rendered_at_us_ = now;
+    }
+    Board::GetInstance().GetDisplay()->SetStatus(status.c_str());
 }
 
 bool MqttLogClient::Publish(const LogRecord& record) {

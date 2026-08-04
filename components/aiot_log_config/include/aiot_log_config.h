@@ -20,6 +20,7 @@ struct AiotLogProfile {
 struct AiotLogConfig {
     bool enabled = false;
     bool remote_mode = false;
+    std::string environment_sensor_device_code;
     AiotLogProfile lan;
     AiotLogProfile remote;
 
@@ -43,6 +44,7 @@ struct AiotLogProfilePatch {
 struct AiotLogConfigPatch {
     bool enabled = false;
     bool remote_mode = false;
+    std::string environment_sensor_device_code;
     AiotLogProfilePatch lan;
     AiotLogProfilePatch remote;
 };
@@ -53,6 +55,7 @@ public:
     // Accepts a full DNS hostname only. IP literals, URLs, ports and malformed
     // DNS labels are rejected before ESP-MQTT can attempt a remote connection.
     static bool IsValidRemoteHostname(const std::string& host);
+    static bool IsValidDeviceCode(const std::string& code);
     // Validates sizes and port range, writes an atomic NVS update, and never
     // logs secrets. Returns false and puts a user-safe message in error.
     static bool Save(const AiotLogConfigPatch& patch, std::string* error = nullptr);

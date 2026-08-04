@@ -7,6 +7,7 @@ namespace {
 constexpr const char* kNamespace = "aiot_log";
 constexpr const char* kEnabled = "enabled";
 constexpr const char* kMode = "mode";
+constexpr const char* kEnvironmentSensorDeviceCode = "env_sensor";
 constexpr const char* kLanUsername = "lan_user";
 constexpr const char* kLanPassword = "lan_pass";
 constexpr const char* kLanToken = "lan_token";
@@ -30,6 +31,7 @@ constexpr size_t kUsernameMax = 128;
 constexpr size_t kPasswordMax = 256;
 constexpr size_t kTokenMax = 128;
 constexpr size_t kHostMax = 253;
+constexpr size_t kDeviceCodeMax = 64;
 
 std::string ReadString(nvs_handle_t handle, const char* key) {
     size_t length = 0;
@@ -70,6 +72,14 @@ bool IsValidRemoteHostnameValue(const std::string& host) {
     }
     return has_dot && has_alpha && label_length > 0 && label_length <= 63 &&
         !previous_was_hyphen;
+}
+
+bool IsValidDeviceCodeValue(const std::string& code) {
+    if (code.empty() || code.size() > kDeviceCodeMax) return false;
+    for (const unsigned char value : code) {
+        if (!std::isalnum(value) && value != '-' && value != '_') return false;
+    }
+    return true;
 }
 
 esp_err_t EraseOptional(nvs_handle_t handle, const char* key) {
@@ -149,6 +159,7 @@ AiotLogConfig AiotLogConfigStore::Load() {
     uint8_t legacy_remote_mode = 0;
     nvs_get_u8(handle, kEnabled, &enabled);
     config.enabled = enabled != 0;
+    config.environment_sensor_device_code = ReadString(handle, kEnvironmentSensorDeviceCode);
     if (nvs_get_u8(handle, kMode, &mode) == ESP_OK) {
         config.remote_mode = mode == 1;
     } else {
@@ -194,6 +205,10 @@ bool AiotLogConfigStore::IsValidRemoteHostname(const std::string& host) {
     return IsValidRemoteHostnameValue(host);
 }
 
+bool AiotLogConfigStore::IsValidDeviceCode(const std::string& code) {
+    return IsValidDeviceCodeValue(code);
+}
+
 bool AiotLogConfigStore::Save(const AiotLogConfigPatch& patch, std::string* error) {
     if (patch.lan.port < 1 || patch.lan.port > 65535 || patch.remote.port != 8883) {
         SetError(error, "LAN port must be valid and remote MQTT must use port 8883");
@@ -207,6 +222,10 @@ bool AiotLogConfigStore::Save(const AiotLogConfigPatch& patch, std::string* erro
         (patch.lan.update_discovery_token &&
             IsTooLong(patch.lan.discovery_token, kTokenMax))) {
         SetError(error, "One or more values are too long");
+        return false;
+    }
+    if (!patch.environment_sensor_device_code.empty() && !IsValidDeviceCodeValue(patch.environment_sensor_device_code)) {
+        SetError(error, "Environment sensor device code must use letters, numbers, hyphen or underscore");
         return false;
     }
     const AiotLogConfig current = Load();
@@ -236,6 +255,9 @@ bool AiotLogConfigStore::Save(const AiotLogConfigPatch& patch, std::string* erro
     }
     esp_err_t result = nvs_set_u8(handle, kEnabled, patch.enabled ? 1 : 0);
     if (result == ESP_OK) result = nvs_set_u8(handle, kMode, patch.remote_mode ? 1 : 0);
+    if (result == ESP_OK) result = patch.environment_sensor_device_code.empty()
+        ? EraseOptional(handle, kEnvironmentSensorDeviceCode)
+        : nvs_set_str(handle, kEnvironmentSensorDeviceCode, patch.environment_sensor_device_code.c_str());
     if (result == ESP_OK) result = nvs_set_str(handle, kLanUsername, patch.lan.username.c_str());
     if (result == ESP_OK) result = nvs_set_str(handle, kLanHost, patch.lan.host.c_str());
     if (result == ESP_OK) result = nvs_set_u16(handle, kLanPort, static_cast<uint16_t>(patch.lan.port));

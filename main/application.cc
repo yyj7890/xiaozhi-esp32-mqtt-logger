@@ -278,6 +278,7 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+            MqttLogClient::GetInstance().RefreshIdleEnvironmentDisplay();
         
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -1013,6 +1014,7 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
+            MqttLogClient::GetInstance().RefreshIdleEnvironmentDisplay();
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);

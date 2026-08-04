@@ -686,6 +686,7 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddBoolToObject(json, "enabled", config.enabled);
             cJSON_AddBoolToObject(json, "remoteMode", config.remote_mode);
             cJSON_AddStringToObject(json, "deviceCode", CONFIG_AIOT_MQTT_LOG_DEVICE_CODE);
+            cJSON_AddStringToObject(json, "environmentSensorDeviceCode", config.environment_sensor_device_code.c_str());
             cJSON* lan = cJSON_AddObjectToObject(json, "lan");
             cJSON_AddStringToObject(lan, "username", config.lan.username.c_str());
             cJSON_AddStringToObject(lan, "manualHost", config.lan.host.c_str());
@@ -742,6 +743,7 @@ void WifiConfigurationAp::StartWebServer()
             }
             const cJSON* enabled = cJSON_GetObjectItemCaseSensitive(json, "enabled");
             const cJSON* remote_mode = cJSON_GetObjectItemCaseSensitive(json, "remoteMode");
+            const cJSON* environment_sensor_device_code = cJSON_GetObjectItemCaseSensitive(json, "environmentSensorDeviceCode");
             const cJSON* lan = cJSON_GetObjectItemCaseSensitive(json, "lan");
             const cJSON* remote = cJSON_GetObjectItemCaseSensitive(json, "remote");
             const cJSON* lan_username = cJSON_GetObjectItemCaseSensitive(lan, "username");
@@ -757,6 +759,7 @@ void WifiConfigurationAp::StartWebServer()
             const cJSON* remote_password = cJSON_GetObjectItemCaseSensitive(remote, "password");
             const cJSON* remote_clear_password = cJSON_GetObjectItemCaseSensitive(remote, "clearPassword");
             if (!cJSON_IsBool(enabled) || !cJSON_IsBool(remote_mode) ||
+                (environment_sensor_device_code != nullptr && !cJSON_IsString(environment_sensor_device_code)) ||
                 !cJSON_IsObject(lan) || !cJSON_IsString(lan_username) ||
                 !cJSON_IsString(lan_host) || !cJSON_IsNumber(lan_port) ||
                 (lan_password != nullptr && !cJSON_IsString(lan_password)) ||
@@ -774,6 +777,7 @@ void WifiConfigurationAp::StartWebServer()
             AiotLogConfigPatch patch;
             patch.enabled = cJSON_IsTrue(enabled);
             patch.remote_mode = cJSON_IsTrue(remote_mode);
+            if (cJSON_IsString(environment_sensor_device_code)) patch.environment_sensor_device_code = environment_sensor_device_code->valuestring;
             patch.lan.username = lan_username->valuestring;
             patch.lan.host = lan_host->valuestring;
             patch.lan.port = lan_port->valueint;

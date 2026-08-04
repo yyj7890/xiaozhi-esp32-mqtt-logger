@@ -30,6 +30,8 @@ public:
     // host. It is empty when logging is disabled or the current network has
     // not produced a valid discovery response.
     std::string GetLastDiscoveredBrokerHost() const;
+    // Safe on the application task. Renders a cached environmental summary only while idle.
+    void RefreshIdleEnvironmentDisplay();
 
 private:
     static constexpr size_t kStatusSize = 16;
@@ -76,6 +78,7 @@ private:
     ConnectionAttemptResult EnsureConnected();
     void ResetMqtt();
     bool Publish(const LogRecord& record);
+    void HandleEnvironmentReport(const char* topic, int topic_length, const char* payload, int payload_length);
     void ScheduleRetry();
     void ScheduleDeferredRetry();
     void RecordConnectionFailure(int64_t now_ms);
@@ -114,6 +117,13 @@ private:
     std::string client_id_;
     std::string report_topic_;
     std::string log_topic_;
+    std::string environment_sensor_device_code_;
+    std::string environment_report_topic_;
+    mutable std::mutex environment_mutex_;
+    std::string environment_status_;
+    int64_t environment_received_at_us_ = 0;
+    int64_t environment_last_rendered_at_us_ = 0;
+    bool environment_parse_failure_logged_ = false;
     std::string discovery_token_;
     mutable std::mutex discovered_broker_mutex_;
     std::string last_discovered_broker_host_;
