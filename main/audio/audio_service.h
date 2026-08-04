@@ -94,6 +94,7 @@ struct AudioTask {
     std::vector<int16_t> pcm;
     uint32_t timestamp;
     std::function<void(bool)> on_output_complete;
+    bool announcement_diagnostics = false;
 };
 
 struct DebugStatistics {

@@ -13,35 +13,91 @@
 namespace {
 constexpr const char* kProtocol = "aiot-announcement-v1";
 constexpr size_t kTerminalLimit = 16;
+bool ReadFixedDigits(const char** cursor, size_t count, int* value) {
+    if (!cursor || !*cursor || !value) return false;
+    int parsed = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const unsigned char c = static_cast<unsigned char>((*cursor)[i]);
+        if (!std::isdigit(c)) return false;
+        parsed = parsed * 10 + (c - '0');
+    }
+    *cursor += count;
+    *value = parsed;
+    return true;
+}
+
+bool Consume(const char** cursor, char expected) {
+    if (!cursor || !*cursor || **cursor != expected) return false;
+    ++*cursor;
+    return true;
+}
+
+// Gregorian civil date to days since 1970-01-01. This is deliberately UTC-only
+// and does not call mktime(), so a device timezone can never affect expiry.
+int64_t DaysSinceUnixEpoch(int year, unsigned month, unsigned day) {
+    year -= month <= 2;
+    const int era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned year_of_era = static_cast<unsigned>(year - era * 400);
+    const unsigned adjusted_month = month > 2 ? month - 3 : month + 9;
+    const unsigned day_of_year = (153 * adjusted_month + 2) / 5 + day - 1;
+    const unsigned day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    return static_cast<int64_t>(era) * 146097 + day_of_era - 719468;
+}
+
 bool ParseUtc(const char* value, int64_t* out) {
     if (!value || !out) return false;
-    int year, month, day, hour, minute, second, consumed = 0;
-    if (std::sscanf(value, "%d-%d-%dT%d:%d:%d%n", &year, &month, &day, &hour, &minute, &second, &consumed) != 6) return false;
-    const char* suffix = value + consumed;
+    const char* cursor = value;
+    int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    if (!ReadFixedDigits(&cursor, 4, &year) || !Consume(&cursor, '-') ||
+        !ReadFixedDigits(&cursor, 2, &month) || !Consume(&cursor, '-') ||
+        !ReadFixedDigits(&cursor, 2, &day) || !Consume(&cursor, 'T') ||
+        !ReadFixedDigits(&cursor, 2, &hour) || !Consume(&cursor, ':') ||
+        !ReadFixedDigits(&cursor, 2, &minute) || !Consume(&cursor, ':') ||
+        !ReadFixedDigits(&cursor, 2, &second)) return false;
     bool has_fraction = false;
     bool fraction_nonzero = false;
-    if (*suffix == '.') {
-        ++suffix;
-        while (std::isdigit(static_cast<unsigned char>(*suffix))) {
+    if (*cursor == '.') {
+        ++cursor;
+        size_t fraction_digits = 0;
+        while (std::isdigit(static_cast<unsigned char>(*cursor))) {
             has_fraction = true;
-            fraction_nonzero = fraction_nonzero || *suffix != '0';
-            ++suffix;
+            fraction_nonzero = fraction_nonzero || *cursor != '0';
+            ++cursor;
+            if (++fraction_digits > 9) return false;
         }
         if (!has_fraction) return false;
     }
-    if (*suffix != 'Z' || suffix[1] != '\0') return false;
+    if (*cursor != 'Z' || cursor[1] != '\0') return false;
     if (year < 2024 || month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) return false;
-    static constexpr int kDaysBeforeMonth[] = {0,31,59,90,120,151,181,212,243,273,304,334};
     const bool leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
     const int days_in_month = (month == 2) ? (leap ? 29 : 28) : ((month == 4 || month == 6 || month == 9 || month == 11) ? 30 : 31);
     if (day > days_in_month) return false;
-    int64_t days = 0;
-    for (int y = 1970; y < year; ++y) days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
-    days += kDaysBeforeMonth[month - 1] + day - 1 + (leap && month > 2 ? 1 : 0);
     // time_t has second resolution. Round a non-zero fractional expiry up so
     // a valid task is never rejected before its declared UTC instant.
-    *out = days * 86400 + hour * 3600 + minute * 60 + second + (fraction_nonzero ? 1 : 0);
+    *out = DaysSinceUnixEpoch(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400 +
+        hour * 3600 + minute * 60 + second + (fraction_nonzero ? 1 : 0);
     return true;
+}
+
+bool VerifyUtcParser() {
+    struct TestCase { const char* text; int64_t epoch; };
+    // Epoch constants were independently produced from the UTC Unix epoch
+    // definition, not by DaysSinceUnixEpoch(), so this detects regressions in
+    // the production civil-date conversion itself.
+    static constexpr TestCase kCases[] = {
+        {"2026-07-28T00:00:00Z", 1785196800},       // whole second
+        {"2026-07-28T00:00:00.001Z", 1785196801},   // ceiling fractional seconds
+        {"2026-07-28T00:00:00.999Z", 1785196801},
+        {"2026-07-28T00:01:00Z", 1785196860},       // minute boundary
+        {"2026-07-29T00:00:00Z", 1785283200},       // day boundary
+        {"2026-07-28T00:05:00.001Z", 1785197101},   // IoT .sssZ + five minutes
+    };
+    int64_t parsed = 0;
+    for (const auto& test : kCases) {
+        if (!ParseUtc(test.text, &parsed) || parsed != test.epoch) return false;
+    }
+    // The fractional future sample is rounded up, so its delta is 301 seconds.
+    return kCases[5].epoch - kCases[0].epoch == 301 && kCases[5].epoch > kCases[0].epoch;
 }
 bool HexCrc(const char* text, uint32_t* crc) {
     if (!text || !crc || std::strlen(text) != 8) return false;
@@ -79,9 +135,11 @@ const char* AnnouncementManager::ManifestResultReason(ManifestResult result) {
     return "invalid_manifest";
 }
 
-AnnouncementManager::ManifestResult AnnouncementManager::AcceptManifest(const char* json, size_t size) {
+AnnouncementManager::ManifestOutcome AnnouncementManager::AcceptManifest(const char* json, size_t size) {
+    static const bool utc_parser_verified = VerifyUtcParser();
+    if (!utc_parser_verified) return {ManifestResult::kInvalidManifest};
     cJSON* root = cJSON_ParseWithLength(json, size);
-    if (!root) return ManifestResult::kInvalidManifest;
+    if (!root) return {ManifestResult::kInvalidManifest};
     auto protocol = cJSON_GetObjectItem(root, "protocol"); auto id = cJSON_GetObjectItem(root, "taskId");
     auto code = cJSON_GetObjectItem(root, "deviceCode"); auto priority = cJSON_GetObjectItem(root, "priority");
     auto expires = cJSON_GetObjectItem(root, "expiresAt"); auto audio = cJSON_GetObjectItem(root, "audio");
@@ -93,17 +151,20 @@ AnnouncementManager::ManifestResult AnnouncementManager::AcceptManifest(const ch
     if (!basic || !ParseUtc(expires->valuestring, &expiry)) {
         cJSON_Delete(root);
         if (can_ack) Ack(id->valuestring, "failed", "invalid_manifest");
-        return ManifestResult::kInvalidManifest;
+        return {ManifestResult::kInvalidManifest};
     }
     auto codec = cJSON_GetObjectItem(audio,"codec"); auto rate = cJSON_GetObjectItem(audio,"sampleRate"); auto channels = cJSON_GetObjectItem(audio,"channels"); auto duration = cJSON_GetObjectItem(audio,"frameDurationMs"); auto frame_count = cJSON_GetObjectItem(audio,"frameCount"); auto frames = cJSON_GetObjectItem(audio,"frames");
     const std::string task_id = id->valuestring;
-    if (device_code_ != code->valuestring || IsExpired(expiry) || !cJSON_IsString(codec) || std::strcmp(codec->valuestring,"opus") || !cJSON_IsNumber(rate) || rate->valueint != 16000 || !cJSON_IsNumber(channels) || channels->valueint != 1 || !cJSON_IsNumber(duration) || duration->valueint != 60 || !cJSON_IsNumber(frame_count) || !cJSON_IsArray(frames) || frame_count->valueint != cJSON_GetArraySize(frames) || cJSON_GetArraySize(frames) < 1 || cJSON_GetArraySize(frames) > static_cast<int>(kMaxFrames)) {
-        const ManifestResult result = IsExpired(expiry) ? ManifestResult::kExpired : ManifestResult::kInvalidManifest;
-        cJSON_Delete(root); Ack(task_id, "failed", ManifestResultReason(result)); return result;
+    const int64_t now_epoch = std::time(nullptr);
+    const bool expired = now_epoch >= expiry;
+    if (device_code_ != code->valuestring || expired || !cJSON_IsString(codec) || std::strcmp(codec->valuestring,"opus") || !cJSON_IsNumber(rate) || rate->valueint != 16000 || !cJSON_IsNumber(channels) || channels->valueint != 1 || !cJSON_IsNumber(duration) || duration->valueint != 60 || !cJSON_IsNumber(frame_count) || !cJSON_IsArray(frames) || frame_count->valueint != cJSON_GetArraySize(frames) || cJSON_GetArraySize(frames) < 1 || cJSON_GetArraySize(frames) > static_cast<int>(kMaxFrames)) {
+        const ManifestResult result = expired ? ManifestResult::kExpired : ManifestResult::kInvalidManifest;
+        cJSON_Delete(root); Ack(task_id, "failed", ManifestResultReason(result));
+        return {result, now_epoch, expiry};
     }
     Receiving candidate{}; candidate.task.task_id = id->valuestring; candidate.task.priority = priority->valueint; candidate.task.expires_at = expiry; candidate.fingerprint.assign(json, size); candidate.frames.resize(cJSON_GetArraySize(frames)); candidate.task.packets.resize(candidate.frames.size());
-    for (int i=0;i<cJSON_GetArraySize(frames);++i) { auto f=cJSON_GetArrayItem(frames,i); auto index=cJSON_GetObjectItem(f,"index"); auto bytes=cJSON_GetObjectItem(f,"bytes"); auto crc=cJSON_GetObjectItem(f,"crc32"); if (!cJSON_IsObject(f)||!cJSON_IsNumber(index)||index->valueint!=i||!cJSON_IsNumber(bytes)||bytes->valueint<1||bytes->valueint>static_cast<int>(kMaxFrameBytes)||!cJSON_IsString(crc)||!HexCrc(crc->valuestring,&candidate.frames[i].crc32)) { cJSON_Delete(root); Ack(candidate.task.task_id,"failed","invalid_manifest"); return ManifestResult::kInvalidManifest; } candidate.frames[i].bytes=bytes->valueint; candidate.bytes+=bytes->valueint; }
-    cJSON_Delete(root); if (candidate.bytes > kMaxTaskBytes) { Ack(candidate.task.task_id,"failed","too_large"); return ManifestResult::kTooLarge; }
+    for (int i=0;i<cJSON_GetArraySize(frames);++i) { auto f=cJSON_GetArrayItem(frames,i); auto index=cJSON_GetObjectItem(f,"index"); auto bytes=cJSON_GetObjectItem(f,"bytes"); auto crc=cJSON_GetObjectItem(f,"crc32"); if (!cJSON_IsObject(f)||!cJSON_IsNumber(index)||index->valueint!=i||!cJSON_IsNumber(bytes)||bytes->valueint<1||bytes->valueint>static_cast<int>(kMaxFrameBytes)||!cJSON_IsString(crc)||!HexCrc(crc->valuestring,&candidate.frames[i].crc32)) { cJSON_Delete(root); Ack(candidate.task.task_id,"failed","invalid_manifest"); return {ManifestResult::kInvalidManifest}; } candidate.frames[i].bytes=bytes->valueint; candidate.bytes+=bytes->valueint; }
+    cJSON_Delete(root); if (candidate.bytes > kMaxTaskBytes) { Ack(candidate.task.task_id,"failed","too_large"); return {ManifestResult::kTooLarge}; }
     std::string ack_status;
     ManifestResult result = ManifestResult::kAccepted;
     {
@@ -130,7 +191,7 @@ AnnouncementManager::ManifestResult AnnouncementManager::AcceptManifest(const ch
     if (result != ManifestResult::kAccepted) {
         Ack(task_id, ack_status.empty() ? "failed" : ack_status, ManifestResultReason(result));
     }
-    return result;
+    return {result, now_epoch, expiry};
 }
 
 bool AnnouncementManager::AcceptFrame(const std::string& id, int index, const uint8_t* data, size_t size) {

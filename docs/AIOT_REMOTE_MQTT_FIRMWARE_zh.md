@@ -457,8 +457,13 @@ MQTT 回调只负责有界接收、校验和投递，不等待播放或执行耗
 - ACK 日志只记录 `received`、`played` 或 `failed` 是否成功进入 MQTT 发布队列，不记录 taskId、reason、Topic 或 payload。
 - 可安全取得 taskId 与 deviceCode 的 manifest 即使在协议、时间或其他基础字段校验失败时，也会回 `failed/invalid_manifest`；完全无法安全解析的 JSON 不会伪造 ACK。
 - manifest 的 UTC `expiresAt` 同时接受整秒 `...SSZ` 和 IoT v1.2.2 使用的小数秒 `...SS.sssZ`；非零小数秒按秒级时钟向上取整，避免任务在声明到期点之前被误判为过期。
+- UTC 解析使用固定宽度 ISO-8601 格式和 UTC civil-date 到 Unix epoch 的换算，不调用本地时区相关的 `mktime()`。固件内置可重复校验：整秒、`.001Z`、`.999Z`、跨分钟、跨日，以及 IoT 实际 `.sssZ` 形式的固定基准“未来五分钟”；预期 epoch 均为独立硬编码标准值，不复用被测 civil-date 算法。`.001Z` 的未来五分钟样例因秒级向上取整，比整秒基准大 301 秒，仍严格为未来时间。
+- 远程模式启动时会输出 `Announcement expiry diagnostics version=2`，用于确认当前二进制包含这套诊断。每个已成功解析 `expiresAt` 的 command 都只额外输出安全诊断 `nowEpoch`、`expiresEpoch` 和 `deltaSeconds`；当前测试日期均在 2038 年前，日志显式转换为 `int32_t` 并固定使用 `%d`，不使用任何 64 位 printf 或格式宏拼接，也不输出 taskId、设备编号、JSON 或私密配置。该三项使用同一 UTC Unix epoch 基准，便于直接确认是设备当前时钟还是 expiresAt 换算异常；实际 IoT “当前时刻 + 5 分钟”任务应产生正值、接近 300 秒的 `deltaSeconds`。
+- 本次真机证据确认问题不在 IoT、MQTT 或固定 Opus 帧：OTA `server_time.timestamp` 是 UTC 毫秒时间，旧固件在 `settimeofday()` 前又叠加了 `timezone_offset`，使 `time(nullptr)` 在 UTC+8 环境中快约八小时。现已改为只将 UTC timestamp 写入系统 Unix epoch；`timezone_offset` 不参与系统时钟写入。新增独立固定基准自检，验证 `2026-07-28T00:00:00Z` 写入的 epoch 为 `1785196800`，而不是 UTC+8 偏移后的值，因此未来五分钟任务不会因时区误判 `expired`。本次未烧录、未部署，仍须按下列步骤完成真机验证。
 - command 处理使用明确的安全结果类型；拒绝时仅记录 `Announcement command rejected. reason=<reason>`。可见 reason 仅限 `expired`、`invalid_manifest`、`too_large`、`id_conflict` 或 `queue_full`，不会输出原始 payload 或私密标识。
 - 设备在 Listening 或 Speaking 时收齐的有效任务会保留为一条待播任务；官方状态回到 Idle 后再次调度，仍不打断官方 AI 对话。
+- 2026-07-28 真机排障发现，旧实现只在末帧注册完成回调，且 `AudioOutputTask` 无条件将 `OutputData()` 后的回调标为成功。因此即使前序 Opus 解码、PCM 输出或扬声器写入失败，仍可能错误回 `played`。现已改为每个 announcement 帧都经过既有 `PushPacketToDecodeQueue()` → Opus 解码 → `audio_playback_queue_` → `AudioOutputTask` → `AudioCodec::OutputData()` 的官方播放路径；16 kHz、单声道、60 ms 帧要求至少 960 PCM samples，空 PCM、解码、重采样、入队或实际输出失败都会回 `failed/playback_failed`，不会伪造成 `played`。只有所有帧按 FIFO 成功写入扬声器输出路径且末帧输出完成才回 `played`。串口只记录安全的 decode 返回码、PCM sample 数、入队、播放开始及完成结果，不记录任务或设备标识。本次尚未烧录、未部署。
+- 后续真机回归发现，上述 16 kHz announcement 专属校验最初误用于官方对话下行包，导致官方小智回复无声。已将该校验与“重采样不可用即失败”判定严格限定到 announcement 帧；官方对话恢复原有的通用解码和扬声器路径。修复版已完整构建并烧录，写入均通过 Hash 校验、设备自动复位。用户确认本轮完成：官方小智对话与固定 Opus 主动播报均应分别使用各自正确路径；主动播报仍只在所有帧成功输出后发送 `played`。
 
 重新构建并经用户明确授权烧录后，使用 MQTTX 按以下顺序验证：
 
@@ -466,7 +471,7 @@ MQTT 回调只负责有界接收、校验和投递，不等待播放或执行耗
 2. 向 command Topic 发布包含安全 taskId/deviceCode、但协议或音频字段故意无效的 JSON；应看到 `Announcement command rejected. reason=invalid_manifest` 和 ACK queued（`status=failed`），同时在 ACK Topic 收到 `failed/invalid_manifest`。
 3. 再发布一个未过期、带 `Z` 或 `.sssZ` UTC 时间的完整固定 Opus manifest 和全部 frame；应看到 `Announcement command accepted`、audio 接收日志、`received` ACK，以及设备 Idle 时的 `played` ACK。若设备正处于对话中，结束对话回到 Idle 后才开始播放。
 
-本次仅修改固件源码与文档；尚未烧录、未部署、未修改 IoT 后端、群晖、桥接器或 MQTT 凭证。
+本轮仅修改固件源码与文档并已烧录验证；未部署、未修改 IoT 后端、群晖、桥接器或 MQTT 凭证。
 
 ### 18.2 官方 MCP 的自然语言提醒适配
 

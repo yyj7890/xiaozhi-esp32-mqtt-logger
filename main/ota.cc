@@ -18,12 +18,39 @@
 #endif
 
 #include <cstring>
+#include <cstdint>
 #include <vector>
 #include <sstream>
 #include <algorithm>
 
 #define TAG "Ota"
 
+namespace {
+
+// OTA server_time.timestamp is a Unix UTC timestamp in milliseconds.
+// settimeofday() always receives UTC epoch seconds; a display timezone must
+// never be added here.
+bool UtcMillisecondsToTimeval(int64_t timestamp_ms, timeval* tv) {
+    if (!tv || timestamp_ms < 0) {
+        return false;
+    }
+    tv->tv_sec = static_cast<time_t>(timestamp_ms / 1000);
+    tv->tv_usec = static_cast<suseconds_t>((timestamp_ms % 1000) * 1000);
+    return true;
+}
+
+bool VerifyUtcSystemTimeConversion() {
+    // Independently fixed UTC reference: 2026-07-28T00:00:00Z.
+    constexpr int64_t kUtcMilliseconds = 1785196800000LL;
+    constexpr time_t kUtcEpoch = 1785196800;
+    constexpr int64_t kShanghaiOffsetMilliseconds = 8LL * 60 * 60 * 1000;
+    timeval tv{};
+    return UtcMillisecondsToTimeval(kUtcMilliseconds, &tv) &&
+        tv.tv_sec == kUtcEpoch && tv.tv_usec == 0 &&
+        tv.tv_sec != static_cast<time_t>((kUtcMilliseconds + kShanghaiOffsetMilliseconds) / 1000);
+}
+
+} // namespace
 
 Ota::Ota() {
 #ifdef ESP_EFUSE_BLOCK_USR_DATA
@@ -209,22 +236,13 @@ esp_err_t Ota::CheckVersion() {
     cJSON *server_time = cJSON_GetObjectItem(root, "server_time");
     if (cJSON_IsObject(server_time)) {
         cJSON *timestamp = cJSON_GetObjectItem(server_time, "timestamp");
-        cJSON *timezone_offset = cJSON_GetObjectItem(server_time, "timezone_offset");
-        
-        if (cJSON_IsNumber(timestamp)) {
-            // 设置系统时间
-            struct timeval tv;
-            double ts = timestamp->valuedouble;
-            
-            // 如果有时区偏移，计算本地时间
-            if (cJSON_IsNumber(timezone_offset)) {
-                ts += (timezone_offset->valueint * 60 * 1000); // 转换分钟为毫秒
+        static const bool utc_time_conversion_verified = VerifyUtcSystemTimeConversion();
+        if (cJSON_IsNumber(timestamp) && utc_time_conversion_verified) {
+            timeval tv{};
+            const int64_t timestamp_ms = static_cast<int64_t>(timestamp->valuedouble);
+            if (UtcMillisecondsToTimeval(timestamp_ms, &tv) && settimeofday(&tv, NULL) == 0) {
+                has_server_time_ = true;
             }
-            
-            tv.tv_sec = (time_t)(ts / 1000);  // 转换毫秒为秒
-            tv.tv_usec = (suseconds_t)((long long)ts % 1000) * 1000;  // 剩余的毫秒转换为微秒
-            settimeofday(&tv, NULL);
-            has_server_time_ = true;
         }
     } else {
         ESP_LOGW(TAG, "No server_time section found!");

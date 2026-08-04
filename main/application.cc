@@ -281,6 +281,12 @@ void Application::Run() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+            if (MqttLogClient::GetInstance().ConsumeEnvironmentExpiryTransition()) {
+                ESP_LOGW(TAG, "Environment data became stale");
+            }
+            if (GetDeviceState() == kDeviceStateIdle) {
+                RefreshIdleEnvironmentScreen();
+            }
         
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -980,8 +986,21 @@ void Application::StartAnnouncementIfIdle() {
     for (auto& item : task.packets) {
         auto packet = std::make_unique<AudioStreamPacket>();
         packet->sample_rate = 16000; packet->frame_duration = 60; packet->payload = std::move(item.payload);
-        std::function<void(bool)> complete;
-        if (item.last) complete = [this, id = task.task_id](bool output_ok) { Schedule([this, id, output_ok]() { if (active_announcement_task_id_ == id) { active_announcement_task_id_.clear(); AnnouncementManager::GetInstance().Complete(id, output_ok ? "played" : "failed", output_ok ? "" : "decode_failed"); } }); };
+        const bool last_packet = item.last;
+        std::function<void(bool)> complete = [this, id = task.task_id, last_packet](bool output_ok) {
+            Schedule([this, id, last_packet, output_ok]() {
+                if (active_announcement_task_id_ != id) return;
+                if (!output_ok) {
+                    active_announcement_task_id_.clear();
+                    AnnouncementManager::GetInstance().Complete(id, "failed", "playback_failed");
+                    return;
+                }
+                if (last_packet) {
+                    active_announcement_task_id_.clear();
+                    AnnouncementManager::GetInstance().Complete(id, "played");
+                }
+            });
+        };
         if (!audio_service_.PushPacketToDecodeQueue(std::move(packet), false, std::move(complete))) { active_announcement_task_id_.clear(); AnnouncementManager::GetInstance().Complete(task.task_id, "failed", "playback_queue_full"); return; }
     }
 }
@@ -1042,6 +1061,7 @@ void Application::HandleStateChangedEvent() {
             display->SetStatus(Lang::Strings::STANDBY);
             display->ClearChatMessages();  // Clear messages first
             display->SetEmotion("neutral"); // Then set emotion (wechat mode checks child count)
+            RefreshIdleEnvironmentScreen();
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
             // A valid task received while the user was talking remains pending.
@@ -1110,6 +1130,18 @@ void Application::Schedule(std::function<void()>&& callback) {
         main_tasks_.push_back(std::move(callback));
     }
     xEventGroupSetBits(event_group_, MAIN_EVENT_SCHEDULE);
+}
+
+void Application::RefreshIdleEnvironmentScreen() {
+    if (GetDeviceState() != kDeviceStateIdle) return;
+    const auto reading = MqttLogClient::GetInstance().GetLatestEnvironmentReading();
+    if (!reading.valid) return;
+    const int64_t now_ms = esp_timer_get_time() / 1000;
+    const bool expired = now_ms - reading.received_at_ms > 3 * 60 * 1000;
+    char text[96];
+    std::snprintf(text, sizeof(text), "室内温度: %.1f ℃%s", reading.temperature,
+        expired ? "\\n室内数据已过期" : "");
+    Board::GetInstance().GetDisplay()->SetStandbyEnvironment(text);
 }
 
 void Application::AbortSpeaking(AbortReason reason) {

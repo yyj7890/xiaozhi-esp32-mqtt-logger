@@ -1,5 +1,6 @@
 #include "mqtt_log_client.h"
 #include "announcement_manager.h"
+#include "application.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -26,6 +27,7 @@ namespace {
 constexpr const char* TAG = "MqttLog";
 constexpr const char* kDiscoveryProtocol = "aiot-mqtt-discovery-v1";
 constexpr std::time_t kValidUnixTime = 1700000000;
+constexpr const char* kEnvironmentReportTopic = "aiot/device/ENV-MONITOR-001/report";
 
 using CertificateVerifyCallback = int (*)(void*, mbedtls_x509_crt*, int, uint32_t*);
 
@@ -93,6 +95,13 @@ bool IsAcceptedLevel(const std::string& level) {
     return level == "INFO" || level == "WARNING" || level == "ERROR";
 }
 
+bool ReadJsonNumber(cJSON* object, const char* key, float* value) {
+    cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+    if (!cJSON_IsNumber(item)) return false;
+    *value = static_cast<float>(item->valuedouble);
+    return true;
+}
+
 void CopyUtf8(char* destination, size_t destination_size, const std::string& source) {
     if (destination_size == 0) return;
     const size_t copy_length = std::min(source.size(), destination_size - 1);
@@ -139,6 +148,9 @@ void MqttLogClient::Start() {
         return;
     }
     remote_mode_ = runtime_config.remote_mode;
+    if (remote_mode_) {
+        ESP_LOGI(TAG, "Announcement expiry diagnostics version=2");
+    }
     // Preserve the existing LAN startup gate. The new remote profile is
     // deliberately best-effort: DNS, TLS or credential failures must never
     // prevent the official XiaoZhi services from starting.
@@ -174,6 +186,7 @@ void MqttLogClient::Start() {
     announcement_command_topic_ = "aiot/device/" + device_code_ + "/announcement/command";
     announcement_audio_prefix_ = "aiot/device/" + device_code_ + "/announcement/audio/";
     announcement_ack_topic_ = "aiot/device/" + device_code_ + "/announcement/ack";
+    environment_report_topic_ = kEnvironmentReportTopic;
     AnnouncementManager::GetInstance().SetDeviceCode(device_code_);
     AnnouncementManager::GetInstance().SetCallbacks(
         [this](const std::string& id, const std::string& status, const std::string& reason) { PublishAnnouncementAck(id, status, reason); },
@@ -196,6 +209,7 @@ void MqttLogClient::Start() {
         return;
     }
     started_ = true;
+    if (!RunEnvironmentParserSelfTest()) ESP_LOGE(TAG, "Environment JSON parser self-test failed");
 #endif
 }
 
@@ -272,6 +286,19 @@ bool MqttLogClient::WaitForStartupVerification(uint32_t timeout_ms, std::string*
 std::string MqttLogClient::GetLastDiscoveredBrokerHost() const {
     std::lock_guard<std::mutex> lock(discovered_broker_mutex_);
     return last_discovered_broker_host_;
+}
+
+MqttLogClient::EnvironmentReading MqttLogClient::GetLatestEnvironmentReading() const {
+    std::lock_guard<std::mutex> lock(environment_mutex_);
+    return environment_reading_;
+}
+
+bool MqttLogClient::ConsumeEnvironmentExpiryTransition() {
+    std::lock_guard<std::mutex> lock(environment_mutex_);
+    if (!environment_reading_.valid || environment_expired_logged_ ||
+        esp_timer_get_time() / 1000 - environment_reading_.received_at_ms <= 3 * 60 * 1000) return false;
+    environment_expired_logged_ = true;
+    return true;
 }
 
 void MqttLogClient::TaskEntry(void* arg) {
@@ -577,10 +604,14 @@ void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32
                 event->client, self->announcement_command_topic_.c_str(), 1);
             self->announcement_audio_subscribe_id_ = esp_mqtt_client_subscribe(
                 event->client, (self->announcement_audio_prefix_ + "#").c_str(), 1);
+            self->environment_subscribe_id_ = esp_mqtt_client_subscribe(
+                event->client, self->environment_report_topic_.c_str(), 1);
             ESP_LOGI(TAG, "Announcement command subscription requested (id=%d)",
                 self->announcement_command_subscribe_id_);
             ESP_LOGI(TAG, "Announcement audio subscription requested (id=%d)",
                 self->announcement_audio_subscribe_id_);
+            ESP_LOGI(TAG, "Environment report subscription requested (id=%d)",
+                self->environment_subscribe_id_);
         }
         xEventGroupSetBits(self->mqtt_events_, kMqttConnected);
     } else if (event_id == MQTT_EVENT_SUBSCRIBED && self->remote_mode_) {
@@ -588,11 +619,19 @@ void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32
             ESP_LOGI(TAG, "Announcement command subscription confirmed");
         } else if (event->msg_id == self->announcement_audio_subscribe_id_) {
             ESP_LOGI(TAG, "Announcement audio subscription confirmed");
+        } else if (event->msg_id == self->environment_subscribe_id_) {
+            ESP_LOGI(TAG, "Environment report subscription confirmed");
         } else {
             ESP_LOGW(TAG, "Unexpected MQTT subscription confirmation (id=%d)", event->msg_id);
         }
     } else if (event_id == MQTT_EVENT_DATA && self->remote_mode_) {
-        self->HandleAnnouncementData(event);
+        if ((event->topic && event->topic_len == static_cast<int>(self->environment_report_topic_.size()) &&
+            std::memcmp(event->topic, self->environment_report_topic_.data(), event->topic_len) == 0) ||
+            self->environment_incoming_total_len_ != 0) {
+            self->HandleEnvironmentData(event);
+        } else {
+            self->HandleAnnouncementData(event);
+        }
     } else if (event_id == MQTT_EVENT_ERROR || event_id == MQTT_EVENT_DISCONNECTED) {
         self->connected_.store(false);
         if (self->mqtt_stop_expected_.load() ||
@@ -606,6 +645,109 @@ void MqttLogClient::MqttEventHandler(void* handler_args, esp_event_base_t, int32
         }
         xEventGroupSetBits(self->mqtt_events_, kMqttFailed);
     }
+}
+
+void MqttLogClient::HandleEnvironmentData(esp_mqtt_event_handle_t event) {
+    // ESP-MQTT may deliver a report in fragments. Reassemble only the bounded
+    // payload here; UI work remains scheduled onto the application main task.
+    if (!event || event->total_data_len <= 0 || event->data_len < 0 ||
+        event->total_data_len > 2048 || !event->data) {
+        ESP_LOGW(TAG, "Environment MQTT data rejected (invalid length)");
+        return;
+    }
+    std::vector<uint8_t> complete;
+    {
+        std::lock_guard<std::mutex> lock(environment_mutex_);
+        if (event->current_data_offset == 0) {
+            environment_incoming_total_len_ = event->total_data_len;
+            environment_incoming_payload_.assign(event->total_data_len, 0);
+        }
+        if (environment_incoming_total_len_ != event->total_data_len || event->current_data_offset < 0 ||
+            event->data_len > environment_incoming_total_len_ - event->current_data_offset) {
+            environment_incoming_payload_.clear();
+            environment_incoming_total_len_ = 0;
+            ESP_LOGW(TAG, "Environment MQTT data rejected (invalid fragment)");
+            return;
+        }
+        std::memcpy(environment_incoming_payload_.data() + event->current_data_offset, event->data, event->data_len);
+        if (event->current_data_offset + event->data_len == environment_incoming_total_len_) {
+            complete = std::move(environment_incoming_payload_);
+            environment_incoming_total_len_ = 0;
+        }
+    }
+    if (!complete.empty()) ProcessEnvironmentMessage(complete);
+}
+
+void MqttLogClient::ProcessEnvironmentMessage(const std::vector<uint8_t>& payload) {
+    EnvironmentReading reading;
+    if (!ParseEnvironmentPayload(reinterpret_cast<const char*>(payload.data()), payload.size(), &reading)) {
+        std::lock_guard<std::mutex> lock(environment_mutex_);
+        if (!environment_parse_failure_logged_) {
+            environment_parse_failure_logged_ = true;
+            ESP_LOGW(TAG, "Environment MQTT JSON parse failed");
+        }
+        return;
+    }
+    reading.received_at_ms = esp_timer_get_time() / 1000;
+    {
+        std::lock_guard<std::mutex> lock(environment_mutex_);
+        environment_reading_ = reading;
+        environment_expired_logged_ = false;
+        if (!environment_first_report_logged_) {
+            environment_first_report_logged_ = true;
+            ESP_LOGI(TAG, "First valid environment report received");
+        }
+    }
+    // MQTT callbacks never touch LVGL. This is executed later by Application::Run.
+    Application::GetInstance().Schedule([]() {
+        Application::GetInstance().RefreshIdleEnvironmentScreen();
+    });
+}
+
+bool MqttLogClient::ParseEnvironmentPayload(const char* json, size_t size, EnvironmentReading* reading) {
+    if (!json || size == 0 || !reading) return false;
+    cJSON* root = cJSON_ParseWithLength(json, size);
+    if (!cJSON_IsObject(root)) { cJSON_Delete(root); return false; }
+    EnvironmentReading parsed;
+    if (!ReadJsonNumber(root, "temperature", &parsed.temperature)) {
+        cJSON_Delete(root);
+        return false;
+    }
+    parsed.has_humidity = ReadJsonNumber(root, "humidity", &parsed.humidity);
+    parsed.has_pressure = ReadJsonNumber(root, "pressure", &parsed.pressure);
+    parsed.has_illuminance = ReadJsonNumber(root, "illuminance", &parsed.illuminance);
+    cJSON* message = cJSON_GetObjectItemCaseSensitive(root, "message");
+    cJSON* legacy = cJSON_IsObject(message) ? message : nullptr;
+    cJSON* legacy_owned = nullptr;
+    if (!legacy && cJSON_IsString(message) && message->valuestring) {
+        legacy_owned = cJSON_Parse(message->valuestring);
+        if (cJSON_IsObject(legacy_owned)) legacy = legacy_owned;
+    }
+    if (legacy) {
+        if (!parsed.has_pressure) parsed.has_pressure = ReadJsonNumber(legacy, "pressure", &parsed.pressure);
+        if (!parsed.has_illuminance) parsed.has_illuminance = ReadJsonNumber(legacy, "illuminance", &parsed.illuminance);
+    }
+    cJSON* signal = cJSON_GetObjectItemCaseSensitive(root, "signalStrength");
+    if (cJSON_IsNumber(signal)) parsed.signal_strength = signal->valueint;
+    cJSON* status = cJSON_GetObjectItemCaseSensitive(root, "status");
+    if (cJSON_IsString(status) && status->valuestring) parsed.status = status->valuestring;
+    parsed.valid = true;
+    cJSON_Delete(legacy_owned);
+    cJSON_Delete(root);
+    *reading = std::move(parsed);
+    return true;
+}
+
+bool MqttLogClient::RunEnvironmentParserSelfTest() {
+    constexpr char kCurrent[] = R"({"temperature":26.76,"humidity":65.09,"pressure":992.5,"illuminance":78.3,"status":"NORMAL"})";
+    constexpr char kLegacy[] = R"({"temperature":20.0,"message":"{\"pressure\":1001.2,\"illuminance\":12.5}"})";
+    constexpr char kInvalid[] = R"({"humidity":65.09})";
+    EnvironmentReading current, legacy, invalid;
+    return ParseEnvironmentPayload(kCurrent, sizeof(kCurrent) - 1, &current) &&
+        current.has_humidity && current.has_pressure && current.has_illuminance &&
+        ParseEnvironmentPayload(kLegacy, sizeof(kLegacy) - 1, &legacy) &&
+        legacy.has_pressure && legacy.has_illuminance &&
+        !ParseEnvironmentPayload(kInvalid, sizeof(kInvalid) - 1, &invalid);
 }
 
 bool MqttLogClient::Publish(const LogRecord& record) {
@@ -698,15 +840,29 @@ void MqttLogClient::HandleAnnouncementData(esp_mqtt_event_handle_t event) {
 
 void MqttLogClient::ProcessAnnouncementMessage(const std::string& topic, const std::vector<uint8_t>& payload) {
     if (topic == announcement_command_topic_) {
-        const auto result = AnnouncementManager::GetInstance().AcceptManifest(
+        const auto outcome = AnnouncementManager::GetInstance().AcceptManifest(
             reinterpret_cast<const char*>(payload.data()), payload.size());
+        const auto result = outcome.result;
+        if (outcome.now_epoch != 0 && outcome.expires_epoch != 0) {
+            // The announcement test horizon is pre-2038. Keep this ESP_LOG
+            // format 32-bit only; this runtime does not format 64-bit values.
+            const int32_t now_epoch = static_cast<int32_t>(outcome.now_epoch);
+            const int32_t expires_epoch = static_cast<int32_t>(outcome.expires_epoch);
+            const int32_t delta_seconds = expires_epoch - now_epoch;
+            ESP_LOGI(TAG, "Announcement command time nowEpoch=%d expiresEpoch=%d deltaSeconds=%d",
+                now_epoch, expires_epoch, delta_seconds);
+        }
         if (result == AnnouncementManager::ManifestResult::kAccepted) {
             ESP_LOGI(TAG, "Announcement command accepted (bytes=%u)", static_cast<unsigned>(payload.size()));
         } else if (result == AnnouncementManager::ManifestResult::kDuplicate) {
             ESP_LOGI(TAG, "Announcement command handled (result=duplicate)");
         } else {
-            ESP_LOGW(TAG, "Announcement command rejected. reason=%s",
-                AnnouncementManager::ManifestResultReason(result));
+            if (result == AnnouncementManager::ManifestResult::kExpired) {
+                ESP_LOGW(TAG, "Announcement command rejected. reason=expired");
+            } else {
+                ESP_LOGW(TAG, "Announcement command rejected. reason=%s",
+                    AnnouncementManager::ManifestResultReason(result));
+            }
         }
         return;
     }

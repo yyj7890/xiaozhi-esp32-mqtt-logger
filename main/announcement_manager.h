@@ -40,13 +40,21 @@ public:
         kQueueFull,
     };
 
+    struct ManifestOutcome {
+        ManifestResult result = ManifestResult::kInvalidManifest;
+        // Set after a command's expiresAt has been parsed, so diagnostics can
+        // compare UTC Unix epochs without exposing request content or identity.
+        int64_t now_epoch = 0;
+        int64_t expires_epoch = 0;
+    };
+
     using AckCallback = std::function<void(const std::string&, const std::string&, const std::string&)>;
     using ReadyCallback = std::function<void()>;
     void SetCallbacks(AckCallback ack, ReadyCallback ready);
     void SetDeviceCode(const std::string& device_code);
     // The manifest must be complete JSON. A malformed payload is reported as
     // kInvalidManifest; ACK is sent only when a safe task identifier exists.
-    ManifestResult AcceptManifest(const char* json, size_t size);
+    ManifestOutcome AcceptManifest(const char* json, size_t size);
     static const char* ManifestResultReason(ManifestResult result);
     // frame_index is derived from the strictly validated MQTT topic.
     bool AcceptFrame(const std::string& task_id, int frame_index, const uint8_t* data, size_t size);

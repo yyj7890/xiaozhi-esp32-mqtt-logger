@@ -306,8 +306,15 @@ void AudioService::AudioOutputTask() {
             codec_->EnableOutput(true);
         }
 
-        codec_->OutputData(task->pcm);
-        if (task->on_output_complete) task->on_output_complete(true);
+        if (task->announcement_diagnostics) {
+            ESP_LOGI(TAG, "Announcement playback started (samples=%u)",
+                static_cast<unsigned>(task->pcm.size()));
+        }
+        const bool output_ok = codec_->OutputData(task->pcm);
+        if (task->announcement_diagnostics) {
+            ESP_LOGI(TAG, "Announcement playback completed (output=%s)", output_ok ? "ok" : "failed");
+        }
+        if (task->on_output_complete) task->on_output_complete(output_ok);
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
@@ -350,9 +357,29 @@ void AudioService::OpusCodecTask() {
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
             task->on_output_complete = std::move(completion);
+            task->announcement_diagnostics = static_cast<bool>(task->on_output_complete);
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             if (opus_decoder_ != nullptr) {
+                const size_t expected_samples = static_cast<size_t>(packet->sample_rate) *
+                    static_cast<size_t>(packet->frame_duration) / 1000;
+                if (task->announcement_diagnostics &&
+                    (packet->sample_rate != 16000 || packet->frame_duration != 60 ||
+                     decoder_frame_size_ < 960 || expected_samples < 960)) {
+                    ESP_LOGE(TAG, "Announcement decode rejected (invalid frame capacity)");
+                    if (task->on_output_complete) task->on_output_complete(false);
+                    lock.lock();
+                    continue;
+                }
+                if (task->announcement_diagnostics &&
+                    decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ == nullptr) {
+                    if (task->announcement_diagnostics) {
+                        ESP_LOGE(TAG, "Announcement resample unavailable");
+                    }
+                    if (task->on_output_complete) task->on_output_complete(false);
+                    lock.lock();
+                    continue;
+                }
                 task->pcm.resize(decoder_frame_size_);
                 esp_audio_dec_in_raw_t raw = {
                     .buffer = (uint8_t *)(packet->payload.data()),
@@ -369,24 +396,38 @@ void AudioService::OpusCodecTask() {
                 std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
                 auto ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &dec_info);
                 decoder_lock.unlock();
-                if (ret == ESP_AUDIO_ERR_OK) {
+                if (ret == ESP_AUDIO_ERR_OK && out_frame.decoded_size > 0 &&
+                    out_frame.decoded_size <= task->pcm.size() * sizeof(int16_t) &&
+                    out_frame.decoded_size % sizeof(int16_t) == 0) {
                     task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
                     if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
                         uint32_t target_size = 0;
                         esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(), &target_size);
                         std::vector<int16_t> resampled(target_size);
                         uint32_t actual_output = target_size;
-                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)task->pcm.data(), task->pcm.size(),
-                                                (esp_ae_sample_t)resampled.data(), &actual_output);
+                        const auto resample_ret = esp_ae_rate_cvt_process(
+                            output_resampler_, (esp_ae_sample_t)task->pcm.data(), task->pcm.size(),
+                            (esp_ae_sample_t)resampled.data(), &actual_output);
+                        if (resample_ret != ESP_OK || actual_output == 0) {
+                            ESP_LOGE(TAG, "Announcement resample failed (code=%d)", resample_ret);
+                            if (task->on_output_complete) task->on_output_complete(false);
+                            lock.lock();
+                            continue;
+                        }
                         resampled.resize(actual_output);
                         task->pcm = std::move(resampled);
                     }
                     lock.lock();
                     audio_playback_queue_.push_back(std::move(task));
                     audio_queue_cv_.notify_all();
+                    if (audio_playback_queue_.back()->announcement_diagnostics) {
+                        ESP_LOGI(TAG, "Announcement decode result=%d samples=%u playback_queue=queued",
+                            ret, static_cast<unsigned>(audio_playback_queue_.back()->pcm.size()));
+                    }
                     debug_statistics_.decode_count++;
                 } else {
-                    ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
+                    ESP_LOGE(TAG, "Announcement decode failed (code=%d samples=%u)", ret,
+                        static_cast<unsigned>(out_frame.decoded_size / sizeof(int16_t)));
                     if (task->on_output_complete) task->on_output_complete(false);
                     lock.lock();
                 }

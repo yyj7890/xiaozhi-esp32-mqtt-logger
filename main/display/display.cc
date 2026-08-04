@@ -45,6 +45,10 @@ void Display::SetChatMessage(const char* role, const char* content) {
     ESP_LOGW(TAG, "     %s", content);
 }
 
+void Display::SetStandbyEnvironment(const char* content) {
+    SetChatMessage("system", content);
+}
+
 void Display::ClearChatMessages() {
     // Default empty implementation, override in subclasses if needed
 }

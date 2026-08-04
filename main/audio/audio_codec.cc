@@ -14,8 +14,11 @@ AudioCodec::AudioCodec() {
 AudioCodec::~AudioCodec() {
 }
 
-void AudioCodec::OutputData(std::vector<int16_t>& data) {
-    Write(data.data(), data.size());
+bool AudioCodec::OutputData(std::vector<int16_t>& data) {
+    if (!output_enabled_ || data.empty()) {
+        return false;
+    }
+    return Write(data.data(), data.size()) == static_cast<int>(data.size());
 }
 
 bool AudioCodec::InputData(std::vector<int16_t>& data) {

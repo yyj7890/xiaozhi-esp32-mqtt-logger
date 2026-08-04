@@ -14,6 +14,20 @@
 
 class MqttLogClient {
 public:
+    struct EnvironmentReading {
+        bool valid = false;
+        float temperature = 0.0F;
+        float humidity = 0.0F;
+        float pressure = 0.0F;
+        float illuminance = 0.0F;
+        bool has_humidity = false;
+        bool has_pressure = false;
+        bool has_illuminance = false;
+        int signal_strength = 0;
+        std::string status;
+        int64_t received_at_ms = 0;
+    };
+
     static MqttLogClient& GetInstance();
 
     void Start();
@@ -31,6 +45,13 @@ public:
     // host. It is empty when logging is disabled or the current network has
     // not produced a valid discovery response.
     std::string GetLastDiscoveredBrokerHost() const;
+    // Returns a copy so future voice/tool integrations can answer from the
+    // cached report without accessing the MQTT callback state.
+    EnvironmentReading GetLatestEnvironmentReading() const;
+    // Returns true once when the latest valid report first becomes stale.
+    bool ConsumeEnvironmentExpiryTransition();
+    // A small deterministic parser check, callable by board-side test harnesses.
+    static bool RunEnvironmentParserSelfTest();
 
 private:
     static constexpr size_t kStatusSize = 16;
@@ -80,6 +101,9 @@ private:
     void PublishAnnouncementAck(const std::string& task_id, const std::string& status, const std::string& reason);
     void HandleAnnouncementData(esp_mqtt_event_handle_t event);
     void ProcessAnnouncementMessage(const std::string& topic, const std::vector<uint8_t>& payload);
+    void HandleEnvironmentData(esp_mqtt_event_handle_t event);
+    void ProcessEnvironmentMessage(const std::vector<uint8_t>& payload);
+    static bool ParseEnvironmentPayload(const char* json, size_t size, EnvironmentReading* reading);
     void ScheduleRetry();
     void ScheduleDeferredRetry();
     void RecordConnectionFailure(int64_t now_ms);
@@ -121,11 +145,20 @@ private:
     std::string announcement_command_topic_;
     std::string announcement_audio_prefix_;
     std::string announcement_ack_topic_;
+    std::string environment_report_topic_;
     // Message IDs are intentionally retained only for diagnosing the two
     // announcement subscriptions; topic strings and credentials are never
     // written to logs.
     int announcement_command_subscribe_id_ = -1;
     int announcement_audio_subscribe_id_ = -1;
+    int environment_subscribe_id_ = -1;
+    mutable std::mutex environment_mutex_;
+    EnvironmentReading environment_reading_;
+    bool environment_first_report_logged_ = false;
+    bool environment_parse_failure_logged_ = false;
+    bool environment_expired_logged_ = false;
+    std::vector<uint8_t> environment_incoming_payload_;
+    int environment_incoming_total_len_ = 0;
     std::string incoming_topic_;
     std::vector<uint8_t> incoming_payload_;
     int incoming_total_len_ = 0;

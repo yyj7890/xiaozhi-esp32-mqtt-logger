@@ -35,6 +35,9 @@ public:
     virtual void ShowNotification(const std::string &notification, int duration_ms = 3000);
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
+    // Called only from the application main task while the device is idle.
+    // Backends may override this later for a dedicated standby layout.
+    virtual void SetStandbyEnvironment(const char* content);
     virtual void ClearChatMessages();
     virtual void SetTheme(Theme* theme);
     virtual Theme* GetTheme() { return current_theme_; }

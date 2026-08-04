@@ -80,6 +80,8 @@ public:
      * Schedule a callback to be executed in the main task
      */
     void Schedule(std::function<void()>&& callback);
+    // Main-task-only refresh requested after an environment MQTT report.
+    void RefreshIdleEnvironmentScreen();
 
     /**
      * Alert with status, message, emotion and optional sound

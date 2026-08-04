@@ -24,7 +24,9 @@ public:
     virtual void EnableInput(bool enable);
     virtual void EnableOutput(bool enable);
 
-    virtual void OutputData(std::vector<int16_t>& data);
+    // Returns true only when a non-empty PCM frame was accepted by the active
+    // codec output path in full. Callers use this for delivery completion.
+    virtual bool OutputData(std::vector<int16_t>& data);
     virtual bool InputData(std::vector<int16_t>& data);
     virtual void Start();
 
